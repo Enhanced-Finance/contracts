@@ -1,0 +1,12 @@
+cache/
+out/
+.vscode
+.idea
+
+lib
+
+# NPM
+.env
+node_modules
+npm/dist
+npm/bin
