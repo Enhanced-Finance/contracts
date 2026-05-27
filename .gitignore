@@ -1,0 +1,23 @@
+cache/
+out/
+.vscode
+.idea
+.trae
+.claude
+.worktrees/
+
+lib
+
+# NPM
+.env
+node_modules
+npm/dist
+npm/bin
+
+broadcast
+tools
+
+.ccb*
+CLAUDE.md
+
+**/superpowers
