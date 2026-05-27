@@ -531,7 +531,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         UserFund storage fund = userFunds[vaultHash][user];
         if (!fund.exists) {
             fund.exists = true;
-            fund.buybackEnabled = true;
+            fund.buybackEnabled = false;
         }
         fund.pendingActivePrincipal += amount;
         fund.initialAmountTotal += amount;
