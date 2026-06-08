@@ -220,15 +220,11 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     }
 
     /**
-     * @dev check if the sender is an authorized operator (the manager address)
+     * @dev check if the sender is the manager address
      * @param _sender msg.sender
      */
-    function _isAuthorized(address _sender, address _accountOwner) internal view {
-        require(
-            (_sender == manager) || (operators[_accountOwner][_sender] && operatorsEnabled)
-                || (_sender == _accountOwner && operatorsEnabled),
-            "C6"
-        );
+    function _isAuthorized(address _sender, address) internal view {
+        require(_sender == manager, "C6");
     }
 
     function _revertIfNotManager() internal view {
@@ -272,7 +268,10 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
      * @param _receiver receiver address
      * @param _amount amount to lend from pool
      */
-    function releaseVaultCollateralToCustody(address _asset, address _receiver, uint256 _amount) external notFullyPaused {
+    function releaseVaultCollateralToCustody(address _asset, address _receiver, uint256 _amount)
+        external
+        notFullyPaused
+    {
         _revertIfNotManager();
         require(_receiver != address(0), "C9");
         require(_amount > 0, "C9");
