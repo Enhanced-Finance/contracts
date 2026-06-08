@@ -35,6 +35,18 @@ contract ControllerSecurityTest is EnhancedVaultIntegrationBase {
         controller.operate(actions);
     }
 
+    function testNonManagerCannotUseManagerEntrypointWhenDeprecatedOperatorsFlagIsForcedOn() public {
+        stdstore.target(address(controller)).sig(controller.operatorsEnabled.selector).enable_packed_slots()
+            .checked_write(true);
+
+        vm.prank(user);
+        (bool success, bytes memory revertData) =
+            address(controller).call(abi.encodeCall(controller.donate, (address(underlying), 0)));
+
+        assertFalse(success);
+        assertEq(revertData, abi.encodeWithSignature("Error(string)", "C6"));
+    }
+
     function testCustodyVaultCollateralRevertsWhenFullyPaused() public {
         vm.prank(owner);
         controller.setFullPauser(owner);

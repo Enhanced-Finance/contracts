@@ -228,9 +228,7 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     }
 
     function _revertIfNotManager() internal view {
-        if (!operatorsEnabled) {
-            require(msg.sender == manager, "C6");
-        }
+        require(msg.sender == manager, "C6");
     }
 
     /**
