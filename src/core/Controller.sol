@@ -101,14 +101,14 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     /// @notice True if all system functionality is paused
     bool public systemFullyPaused;
 
-    /// @notice True if operators and vault owners are allowed to interact with vaults, false if not
+    /// @dev Deprecated. Operators are permanently disabled; kept for upgradeable storage layout compatibility.
     bool public operatorsEnabled = false;
 
     /// @dev mapping between an owner address and the number of owner address vaults
     mapping(address => uint256) internal accountVaultCounter;
     /// @dev mapping between an owner address and a specific vault using a vault id
     mapping(address => mapping(uint256 => MarginVault.Vault)) internal vaults;
-    /// @dev mapping between an account owner and their approved or unapproved account operators
+    /// @dev Deprecated. Kept for upgradeable storage layout compatibility.
     mapping(address => mapping(address => bool)) internal operators;
 
     /******************************************************************** V2.0.0 storage upgrade ******************************************************/
@@ -127,7 +127,7 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     ///@dev mapping to store liquidation states of a naked margin vault
     mapping(address => mapping(uint256 => MarginVault.VaultLiquidationDetails)) internal vaultLiquidationDetails;
 
-    /// @notice emits an event when an account operator is updated for a specific account owner
+    /// @notice Deprecated operator update event retained for ABI compatibility.
     event AccountOperatorUpdated(address indexed accountOwner, address indexed operator, bool isSet);
     /// @notice emits an event when a new vault is opened
     event VaultOpened(address indexed accountOwner, uint256 vaultId, uint256 indexed vaultType);
@@ -329,26 +329,19 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     }
 
     /**
-     * @notice allows the owner to toggle operatorsEnabled
+     * @notice Deprecated. Operators cannot be enabled.
      * @param _enabled whether operators are enabled or not
      */
     function setOperatorsEnabled(bool _enabled) external onlyOwner {
         require(!_enabled, "operators cannot be enabled");
-        operatorsEnabled = _enabled;
+        operatorsEnabled = false;
     }
 
     /**
-     * @notice allows a user to give or revoke privileges to an operator which can act on their behalf on their vaults
-     * @dev can only be updated by the vault owner
-     * @param _operator operator that the sender wants to give privileges to or revoke them from
-     * @param _isOperator new boolean value that expresses if the sender is giving or revoking privileges for _operator
+     * @notice Deprecated. Account operators are permanently disabled.
      */
-    function setOperator(address _operator, bool _isOperator) external {
-        require(operators[msg.sender][_operator] != _isOperator, "C9");
-
-        operators[msg.sender][_operator] = _isOperator;
-
-        emit AccountOperatorUpdated(msg.sender, _operator, _isOperator);
+    function setOperator(address, bool) external pure {
+        revert("operators disabled");
     }
 
     /**
@@ -404,13 +397,11 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     }
 
     /**
-     * @notice check if a specific address is an operator for an owner account
-     * @param _owner account owner address
-     * @param _operator account operator address
-     * @return True if the _operator is an approved operator for the _owner account
+     * @notice Deprecated. Account operators are permanently disabled.
+     * @return False because Controller account operators are disabled.
      */
-    function isOperator(address _owner, address _operator) external view returns (bool) {
-        return operators[_owner][_operator];
+    function isOperator(address, address) external pure returns (bool) {
+        return false;
     }
 
     /**

@@ -14,6 +14,20 @@ contract ControllerSecurityTest is EnhancedVaultIntegrationBase {
         controller.setOperatorsEnabled(true);
     }
 
+    function testDeprecatedSetOperatorAlwaysReverts() public {
+        vm.expectRevert("operators disabled");
+        controller.setOperator(user, true);
+    }
+
+    function testDeprecatedIsOperatorIgnoresHistoricalStorage() public {
+        // operators is intentionally retained at storage slot 11 for upgrade compatibility.
+        bytes32 innerSlot = keccak256(abi.encode(owner, uint256(11)));
+        bytes32 operatorSlot = keccak256(abi.encode(user, innerSlot));
+        vm.store(address(controller), operatorSlot, bytes32(uint256(1)));
+
+        assertFalse(controller.isOperator(owner, user));
+    }
+
     function testVaultOwnerCannotOperateWhenDeprecatedOperatorsFlagIsForcedOn() public {
         stdstore.target(address(controller)).sig(controller.operatorsEnabled.selector).enable_packed_slots()
             .checked_write(true);
