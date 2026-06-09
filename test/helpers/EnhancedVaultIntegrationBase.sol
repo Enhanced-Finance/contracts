@@ -23,7 +23,7 @@ import {EnhancedVault} from "src/periphery/vault/EnhancedVault.sol";
 import {EnhancedVaultLinkedLibraries} from "./EnhancedVaultLinkedLibraries.sol";
 
 contract EnhancedVaultFixtureERC20 is ERC20 {
-    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_, 18) {}
+    constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_, decimals_) {}
 
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
@@ -138,7 +138,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         uint256 quoteQuantity;
         uint256 quantity;
         uint256 collateralAmount;
-        uint256 fee;
+        uint256 makerFee;
+        uint256 takerFee;
         uint64 expiry;
         bool isPut;
         bool isPhysicallySettled;
@@ -159,7 +160,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         uint256 quoteQuantity;
         uint256 quantity;
         uint256 collateralAmount;
-        uint256 fee;
+        uint256 makerFee;
+        uint256 takerFee;
         uint64 expiry;
         uint64 quoteNonce;
         uint64 confirmationNonce;
@@ -314,9 +316,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         bot = vm.addr(BOT_PK);
     }
 
-    function _deployTokens() internal {
-        underlying = new EnhancedVaultFixtureERC20("Fixture Underlying", "fUND");
-        strike = new EnhancedVaultFixtureERC20("Fixture Strike", "fUSD");
+    function _deployTokens() internal virtual {
+        underlying = new EnhancedVaultFixtureERC20("Fixture Underlying", "fUND", 18);
+        strike = new EnhancedVaultFixtureERC20("Fixture Strike", "fUSD", 18);
 
         underlying.mint(user, INITIAL_USER_BALANCE);
         underlying.mint(maker, INITIAL_MAKER_BALANCE);
@@ -639,7 +641,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             quoteQuantity: 0,
             quantity: 0,
             collateralAmount: 0,
-            fee: 0,
+            makerFee: 0,
+            takerFee: 0,
             expiry: 0,
             quoteNonce: 0,
             confirmationNonce: 0,
@@ -665,7 +668,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             quoteQuantity: 1e18,
             quantity: 1e18,
             collateralAmount: 1e18,
-            fee: 0,
+            makerFee: 0,
+            takerFee: 0,
             expiry: uint64(defaultVaultParams.startTime + defaultVaultParams.cycleDuration),
             isPut: defaultVaultParams.isPut,
             isPhysicallySettled: false,
@@ -685,7 +689,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         if (overrides.quoteQuantity != 0) cfg.quoteQuantity = overrides.quoteQuantity;
         if (overrides.quantity != 0) cfg.quantity = overrides.quantity;
         if (overrides.collateralAmount != 0) cfg.collateralAmount = overrides.collateralAmount;
-        if (overrides.fee != 0) cfg.fee = overrides.fee;
+        if (overrides.makerFee != 0) cfg.makerFee = overrides.makerFee;
+        if (overrides.takerFee != 0) cfg.takerFee = overrides.takerFee;
         if (overrides.expiry != 0) cfg.expiry = overrides.expiry;
         if (overrides.quoteNonce != 0) cfg.quoteNonce = overrides.quoteNonce;
         if (overrides.confirmationNonce != 0) cfg.confirmationNonce = overrides.confirmationNonce;
@@ -714,7 +719,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         require(cfg.quantity <= type(uint128).max, "quantity overflow");
         require(cfg.strikePrice <= type(uint128).max, "strike overflow");
         require(cfg.collateralAmount <= type(uint128).max, "collateral overflow");
-        require(cfg.fee <= type(uint128).max, "fee overflow");
+        require(cfg.makerFee <= type(uint128).max, "maker fee overflow");
+        require(cfg.takerFee <= type(uint128).max, "taker fee overflow");
         bytes memory quoteSig = _signMakerQuote(cfg);
         bytes memory confSig = new bytes(65);
         return abi.encodePacked(
@@ -737,7 +743,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             cfg.usd,
             cfg.collateralAsset,
             uint128(cfg.collateralAmount),
-            uint128(cfg.fee)
+            uint128(cfg.makerFee),
+            uint128(cfg.takerFee)
         );
     }
 
