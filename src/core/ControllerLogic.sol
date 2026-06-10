@@ -446,70 +446,23 @@ contract ControllerLogic is Initializable, OwnableUpgradeable, ReentrancyGuardTr
 
             settleMem.shortAmount = vault.shortAmounts[0];
 
-            // CALLS:
-            // strike payment is number of options in vault * strike price, converted to strike decimals
-            // strikePrice denominatd in e8, shortAmount denominated in e8
-            // strikePrice * shortAmount * e2 = e18
-            // divide by (18 - strike decimals) to convert to strike decimals
-            // assumes strike asset decimals <= 18
-            // PUTS:
-            // strike payment is number of options in vault, converted to underying decimals
-            // shortAmount * e10 = e18
-            // divide by (18 - underlying decimals) to convert to underlying decimals
-            settleMem.strikePayout = otoken.isPut()
-                ? settleMem.shortAmount * 1e10 / (10 ** (18 - uint256(IERC20Metadata(settleMem.underlying).decimals())))
-                : (strikePrice * settleMem.shortAmount * 1e2)
-                    / (10 ** (18 - uint256(IERC20Metadata(settleMem.strike).decimals())));
-
-            // From here there are three scenarios that can happen:
-            // 0. (IF OTM) There is no strike asset in the pool. Meaning the user should receive their payment in collateral + any collateral they have from overcollateralisation
-            // 1. (IF ITM and no strike asset in the pool) Meaning the user should receive their payment in collateral + any collateral they have from overcollateralisation
-            // 2. (IF ITM not enough strike asset in the pool to pay the strike payment) Meaning the user should receive any remaining strike asset, their remaining payment in collateral + any collateral they have from overcollateralisation
-            // 3. (IF ITM and there is enough strike asset in the pool to pay the strike payment) Meaning the user should receive their payment in strike + any collateral they have from overcollateralization
-            if (settleMem.receivingAssetBalance == 0) {
-                // this is scenario 0 or 1
-                settleMem.strikePayout = 0;
-                // each remaining otoken to settle gets an equal share of collateralRedemptionBalance, (for OTM options this is zero)
-                uint256 vaultShareOfCollateralRedemptionBalance =
-                    settleMem.collateralRedemptionBalance * settleMem.shortAmount / settleMem.otokenQuantity;
-                settleMem.collateralPayout += vaultShareOfCollateralRedemptionBalance;
-
-                pool.updateRedemptionBalance(
-                    address(otoken),
-                    -int256(settleMem.shortAmount),
-                    false,
-                    -int256(vaultShareOfCollateralRedemptionBalance)
-                );
-            } else if (settleMem.strikePayout > settleMem.receivingAssetBalance) {
-                // this is scenario 2
+            uint256 vaultShareOfCollateralRedemptionBalance;
+            if (settleMem.shortAmount == settleMem.otokenQuantity) {
+                vaultShareOfCollateralRedemptionBalance = settleMem.collateralRedemptionBalance;
                 settleMem.strikePayout = settleMem.receivingAssetBalance;
-                // find how many options worth of strike payment is in the pool
-                // CALLS: get receivingAssetBalance and convert to e18 notation then divide by strikePrice * 1e2 (e10) to get e8 value.
-                // PUTS: get receivingAssetBalance and convert to e8 notation
-                // assumes strike asset decimals <= 18
-                settleMem.strikeCount = otoken.isPut()
-                    ? settleMem.receivingAssetBalance
-                        * (10 ** (18 - uint256(IERC20Metadata(settleMem.underlying).decimals()))) / 1e10
-                    : settleMem.receivingAssetBalance
-                        * (10 ** (18 - uint256(IERC20Metadata(settleMem.strike).decimals()))) / (strikePrice * 1e2);
-                // we can get the amount the user is owed in collateral asset by subtracting the strikeCount from the shortAmounts
-                uint256 contractsLeft = settleMem.shortAmount - settleMem.strikeCount;
-                // divide collateralRedemptionBalance by total number of options to split between (otokenQuantity - strikeCount) and multiply by contractsLeft
-                uint256 vaultShareOfCollateralRedemptionBalance = settleMem.collateralRedemptionBalance * contractsLeft
-                    / (settleMem.otokenQuantity - settleMem.strikeCount);
-                // the collateral payout is whatever it already was + the share of the collateralRedemptionBalance
-                settleMem.collateralPayout += vaultShareOfCollateralRedemptionBalance;
-                pool.updateRedemptionBalance(
-                    address(otoken), -int256(settleMem.strikeCount), true, -int256(settleMem.strikePayout)
-                );
-                pool.updateRedemptionBalance(
-                    address(otoken), -int256(contractsLeft), false, -int256(vaultShareOfCollateralRedemptionBalance)
-                );
             } else {
-                // this is scenario 3
-                pool.updateRedemptionBalance(
-                    address(otoken), -int256(settleMem.shortAmount), true, -int256(settleMem.strikePayout)
-                );
+                vaultShareOfCollateralRedemptionBalance =
+                    settleMem.collateralRedemptionBalance * settleMem.shortAmount / settleMem.otokenQuantity;
+                settleMem.strikePayout =
+                    settleMem.receivingAssetBalance * settleMem.shortAmount / settleMem.otokenQuantity;
+            }
+
+            settleMem.collateralPayout += vaultShareOfCollateralRedemptionBalance;
+            pool.updateRedemptionBalance(
+                address(otoken), -int256(settleMem.shortAmount), false, -int256(vaultShareOfCollateralRedemptionBalance)
+            );
+            if (settleMem.strikePayout > 0) {
+                pool.updateRedemptionBalance(address(otoken), 0, true, -int256(settleMem.strikePayout));
             }
         }
 
