@@ -9,9 +9,7 @@ interface IOtokenFactory {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external view returns (address);
 
     function createOtoken(
@@ -21,9 +19,7 @@ interface IOtokenFactory {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external returns (address);
 
     function getTargetOtokenAddress(
@@ -33,16 +29,12 @@ interface IOtokenFactory {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external view returns (address);
 
     event OtokenCreated(
         address tokenAddress,
         address creator,
-        address vaultOwner,
-        uint256 vaultId,
         address indexed underlying,
         address indexed strike,
         address indexed collateral,

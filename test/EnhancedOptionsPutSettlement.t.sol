@@ -77,17 +77,8 @@ contract EnhancedOptionsPutSettlementTest is EnhancedVaultIntegrationBase {
         vm.prank(user);
         enhancedOptions.ingressoNewTrustedTakerAndMakerPosition(payload);
 
-        uint256 vaultId = controller.getAccountVaultCounter(user);
         otoken = factory.getOtoken(
-            address(underlying),
-            address(strike),
-            address(strike),
-            PUT_STRIKE_PRICE,
-            cfg.expiry,
-            true,
-            false,
-            user,
-            vaultId
+            address(underlying), address(strike), address(strike), PUT_STRIKE_PRICE, cfg.expiry, true, false
         );
         assertEq(mmarket.userBalances(maker, otoken), PUT_OTOKEN_AMOUNT, "maker should hold put otokens in MMarket");
     }

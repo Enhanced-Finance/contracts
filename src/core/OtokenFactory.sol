@@ -52,8 +52,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event OtokenCreated(
         address tokenAddress,
         address creator,
-        address vaultOwner,
-        uint256 vaultId,
         address indexed underlying,
         address indexed strike,
         address indexed collateral,
@@ -73,8 +71,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @param _expiry expiration timestamp as a unix timestamp
      * @param _isPut True if a put option, False if a call option
      * @param _isPhysicallySettled True if a physically settled, false if cash settled
-     * @param _vaultOwner owner of the vault this oToken is minted from
-     * @param _vaultId id of the vault this oToken is minted from
      * @return newOtoken address of the newly created option
      */
     function createOtoken(
@@ -84,26 +80,14 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external returns (address) {
         require(_expiry > block.timestamp, "OtokenFactory: Can't create expired option");
         require(_expiry < MAX_EXPIRY, "OtokenFactory: Can't create option with expiry > 2345/12/31");
-        require(_vaultOwner != address(0), "OtokenFactory: Vault owner is zero");
-        require(_vaultId > 0, "OtokenFactory: Vault id is zero");
         // 8 hours = 3600 * 8 = 28800 seconds
         // require((_expiry - 28800) % 86400 == 0, "OtokenFactory: Option has to expire 08:00 UTC");
         bytes32 id = _getOptionId(
-            _underlyingAsset,
-            _strikeAsset,
-            _collateralAsset,
-            _strikePrice,
-            _expiry,
-            _isPut,
-            _isPhysicallySettled,
-            _vaultOwner,
-            _vaultId
+            _underlyingAsset, _strikeAsset, _collateralAsset, _strikePrice, _expiry, _isPut, _isPhysicallySettled
         );
         require(idToAddress[id] == address(0), "OtokenFactory: Option already created");
 
@@ -133,9 +117,7 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 _strikePrice,
                 _expiry,
                 _isPut,
-                _isPhysicallySettled,
-                _vaultOwner,
-                _vaultId
+                _isPhysicallySettled
             );
 
         idToAddress[id] = newOtoken;
@@ -145,8 +127,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         emit OtokenCreated(
             newOtoken,
             msg.sender,
-            _vaultOwner,
-            _vaultId,
             _underlyingAsset,
             _strikeAsset,
             _collateralAsset,
@@ -176,8 +156,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @param _expiry expiration timestamp as a unix timestamp
      * @param _isPut True if a put option, False if a call option
      * @param _isPhysicallySettled True if a physically settled, false if cash settled
-     * @param _vaultOwner owner of the vault this oToken is minted from
-     * @param _vaultId id of the vault this oToken is minted from
      * @return the address of target otoken.
      */
     function getOtoken(
@@ -187,20 +165,10 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external view returns (address) {
         bytes32 id = _getOptionId(
-            _underlyingAsset,
-            _strikeAsset,
-            _collateralAsset,
-            _strikePrice,
-            _expiry,
-            _isPut,
-            _isPhysicallySettled,
-            _vaultOwner,
-            _vaultId
+            _underlyingAsset, _strikeAsset, _collateralAsset, _strikePrice, _expiry, _isPut, _isPhysicallySettled
         );
         return idToAddress[id];
     }
@@ -215,8 +183,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @param _expiry expiration timestamp as a unix timestamp
      * @param _isPut True if a put option, False if a call option
      * @param _isPhysicallySettled True if a physically settled, false if cash settled
-     * @param _vaultOwner owner of the vault this oToken is minted from
-     * @param _vaultId id of the vault this oToken is minted from
      * @return targetAddress the address this oToken would be deployed at
      */
     function getTargetOtokenAddress(
@@ -226,21 +192,11 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external view returns (address) {
         address otokenImpl = AddressBookInterface(addressBook).getOtokenImpl();
         bytes32 id = _getOptionId(
-            _underlyingAsset,
-            _strikeAsset,
-            _collateralAsset,
-            _strikePrice,
-            _expiry,
-            _isPut,
-            _isPhysicallySettled,
-            _vaultOwner,
-            _vaultId
+            _underlyingAsset, _strikeAsset, _collateralAsset, _strikePrice, _expiry, _isPut, _isPhysicallySettled
         );
         return Clones.predictDeterministicAddress(otokenImpl, id);
     }
@@ -254,8 +210,6 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @param _expiry expiration timestamp as a unix timestamp
      * @param _isPut True if a put option, False if a call option
      * @param _isPhysicallySettled True if a physically settled, false if cash settled
-     * @param _vaultOwner owner of the vault this oToken is minted from
-     * @param _vaultId id of the vault this oToken is minted from
      * @return id the unique id of an oToken
      */
     function _getOptionId(
@@ -265,21 +219,11 @@ contract OtokenFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) internal pure returns (bytes32) {
         return keccak256(
             abi.encodePacked(
-                _underlyingAsset,
-                _strikeAsset,
-                _collateralAsset,
-                _strikePrice,
-                _expiry,
-                _isPut,
-                _isPhysicallySettled,
-                _vaultOwner,
-                _vaultId
+                _underlyingAsset, _strikeAsset, _collateralAsset, _strikePrice, _expiry, _isPut, _isPhysicallySettled
             )
         );
     }

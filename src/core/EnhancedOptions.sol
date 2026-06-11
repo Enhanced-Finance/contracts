@@ -310,8 +310,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         uint256 expiration;
         bool isPut;
         bool isPhysicallySettled;
-        address vaultOwner;
-        uint256 vaultId;
     }
 
     struct CustodyReleaseRequest {
@@ -614,9 +612,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
                 strike: sellerConfirmation.strike,
                 expiration: sellerConfirmation.expiry,
                 isPut: sellerConfirmation.isPut,
-                isPhysicallySettled: sellerConfirmation.isPhysicallySettled,
-                vaultOwner: sellerConfirmation.taker,
-                vaultId: vaultId
+                isPhysicallySettled: sellerConfirmation.isPhysicallySettled
             })
         );
 
@@ -839,9 +835,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             otoken.strike,
             otoken.expiration,
             otoken.isPut,
-            otoken.isPhysicallySettled,
-            otoken.vaultOwner,
-            otoken.vaultId
+            otoken.isPhysicallySettled
         );
         if (otokenFromFactory != address(0)) {
             if (ERC20(otokenFromFactory).allowance(address(this), address(mmarket)) == 0) {
@@ -857,9 +851,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             otoken.strike,
             otoken.expiration,
             otoken.isPut,
-            otoken.isPhysicallySettled,
-            otoken.vaultOwner,
-            otoken.vaultId
+            otoken.isPhysicallySettled
         );
         SafeTransferLib.safeApprove(ERC20(otokenCreated), address(mmarket), type(uint256).max);
         return otokenCreated;

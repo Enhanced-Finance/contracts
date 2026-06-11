@@ -10,15 +10,11 @@ interface IOtoken {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled,
-        address _vaultOwner,
-        uint256 _vaultId
+        bool _isPhysicallySettled
     ) external;
 
     function getOtokenDetails() external view returns (address, address, address, uint256, uint256, bool, bool);
 
     function collateralAsset() external view returns (address);
     function expiryTimestamp() external view returns (uint256);
-    function vaultOwner() external view returns (address);
-    function vaultId() external view returns (uint256);
 }
