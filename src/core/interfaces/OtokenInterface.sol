@@ -18,6 +18,8 @@ interface OtokenInterface {
 
     function isPhysicallySettled() external view returns (bool);
 
+    function vaultOwner() external view returns (address);
+
     function init(
         address _addressBook,
         address _underlyingAsset,
@@ -26,7 +28,8 @@ interface OtokenInterface {
         uint256 _strikePrice,
         uint256 _expiry,
         bool _isPut,
-        bool _isPhysicallySettled
+        bool _isPhysicallySettled,
+        address _vaultOwner
     ) external;
 
     function getOtokenDetails() external view returns (address, address, address, uint256, uint256, bool, bool);

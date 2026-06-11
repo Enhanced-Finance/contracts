@@ -43,6 +43,9 @@ contract Otoken is ERC20PermitUpgradeable {
     /// @notice If true, holder must pay the strike price to receive the full underlying.
     bool public isPhysicallySettled;
 
+    /// @notice owner of the vault this oToken is minted from
+    address public vaultOwner;
+
     uint256 private constant STRIKE_PRICE_SCALE = 1e8;
     uint256 private constant STRIKE_PRICE_DIGITS = 8;
 
@@ -61,6 +64,7 @@ contract Otoken is ERC20PermitUpgradeable {
      * @param _expiryTimestamp expiration timestamp of the option, represented as a unix timestamp
      * @param _isPut True if a put option, False if a call option
      * @param _isPhysicallySettled True if a physically settled, false if cash settled
+     * @param _vaultOwner owner of the vault this oToken is minted from
      */
     function init(
         address _addressBook,
@@ -70,7 +74,8 @@ contract Otoken is ERC20PermitUpgradeable {
         uint256 _strikePrice,
         uint256 _expiryTimestamp,
         bool _isPut,
-        bool _isPhysicallySettled
+        bool _isPhysicallySettled,
+        address _vaultOwner
     ) external initializer {
         controller = AddressBookInterface(_addressBook).getController();
         controllerLogic = AddressBookInterface(_addressBook).getControllerLogic();
@@ -81,6 +86,7 @@ contract Otoken is ERC20PermitUpgradeable {
         expiryTimestamp = _expiryTimestamp;
         isPut = _isPut;
         isPhysicallySettled = _isPhysicallySettled;
+        vaultOwner = _vaultOwner;
         (string memory tokenName, string memory tokenSymbol) = _getNameAndSymbol();
         __ERC20_init_unchained(tokenName, tokenSymbol);
         __ERC20Permit_init(tokenName);
