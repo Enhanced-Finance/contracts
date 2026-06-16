@@ -48,5 +48,7 @@ interface IEnhancedOptions {
 
     function makerCustodyLimitBps(address maker, address receiver) external view returns (uint256);
 
+    function marginPool() external view returns (address);
+
     function ingressoReturnFromCustody(address owner, uint256[] calldata vaultIds, uint256[] calldata amounts) external;
 }

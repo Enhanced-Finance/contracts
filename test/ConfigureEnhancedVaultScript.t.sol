@@ -2,15 +2,11 @@
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    ConfigureEnhancedVault,
-    IEnhancedVaultConfigTarget
-} from "../script/EnhancedVault/ConfigureEnhancedVault.s.sol";
+import {ConfigureEnhancedVault, IEnhancedVaultConfigTarget} from "../script/EnhancedVault/ConfigureEnhancedVault.s.sol";
 
 contract MockEnhancedVaultConfigTarget is IEnhancedVaultConfigTarget {
     address public operator;
     address public vaultSigner;
-    address public marginPool;
     address public swapRouter;
 
     address[] internal _marginPoolAssets;
@@ -24,10 +20,6 @@ contract MockEnhancedVaultConfigTarget is IEnhancedVaultConfigTarget {
 
     function setVaultSigner(address newSigner) external {
         vaultSigner = newSigner;
-    }
-
-    function setMarginPool(address newMarginPool) external {
-        marginPool = newMarginPool;
     }
 
     function setSwapRouter(address newSwapRouter) external {

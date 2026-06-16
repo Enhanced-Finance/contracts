@@ -232,7 +232,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     /// @dev Uniswap V3 swap router for buyback
     address public swapRouter;
 
-    address public marginPool;
+    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
+    address private __deprecatedMarginPool;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Events
@@ -475,16 +476,16 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         vaultSigner = _signer;
     }
 
-    function setMarginPool(address _marginPool) external onlyOwner {
-        if (_marginPool == address(0)) revert ZeroAddress();
-        marginPool = _marginPool;
+    function marginPool() public view returns (address) {
+        return enhancedOptions.marginPool();
     }
 
     /// @notice sets approval for the margin pool to remove funds for an asset
     function setAssetApprovalMarginPool(address _asset, bool _approval) external {
         _checkOwner();
-        if (marginPool == address(0)) revert ZeroAddress();
-        _forceApprove(_asset, marginPool, _approval ? type(uint256).max : 0);
+        address marginPool_ = marginPool();
+        if (marginPool_ == address(0)) revert ZeroAddress();
+        _forceApprove(_asset, marginPool_, _approval ? type(uint256).max : 0);
     }
 
     /// @notice kept for deployment compatibility; buyback now grants per-swap router allowance

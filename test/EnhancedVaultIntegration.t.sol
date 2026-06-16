@@ -12,11 +12,30 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
         assertTrue(vaultHash != bytes32(0), "vault hash should be non-zero");
         assertFalse(defaultVaultParams.isPut, "default vault should be call");
         assertEq(address(vault.enhancedOptions()), address(enhancedOptions), "vault enhanced options mismatch");
+        assertEq(vault.marginPool(), address(marginPool), "vault margin pool should come from enhanced options");
         assertEq(_currentCycleId(vaultHash), 1, "vault current cycle should start at one");
         assertEq(
             oracle.getPrice(address(underlying)),
             SEEDED_UNDERLYING_PRICE,
             "underlying spot price should match seeded value"
+        );
+    }
+
+    function testMarginPool_ShouldFollowEnhancedOptions() external {
+        address newMarginPool = address(0xBEEF);
+
+        vm.prank(owner);
+        enhancedOptions.setMarginPool(newMarginPool);
+
+        assertEq(vault.marginPool(), newMarginPool, "vault should read latest enhanced options margin pool");
+
+        vm.prank(owner);
+        vault.setAssetApprovalMarginPool(address(underlying), true);
+
+        assertEq(
+            underlying.allowance(address(vault), newMarginPool),
+            type(uint256).max,
+            "approval should target latest margin pool"
         );
     }
 

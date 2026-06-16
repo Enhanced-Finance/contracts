@@ -281,7 +281,6 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         enhancedOptions.setTrustedMaker(maker, true);
         enhancedOptions.setOperator(operator);
 
-        vault.setMarginPool(address(marginPool));
         vault.setAssetApprovalMarginPool(address(underlying), true);
         vault.setSwapRouter(address(swapRouter));
         vault.setAssetApprovalSwapRouter(address(strike), true);
