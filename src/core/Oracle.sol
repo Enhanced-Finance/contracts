@@ -92,6 +92,7 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(_expiries.length == _prices.length, "Oracle: invalid migration data");
 
         for (uint256 i; i < _expiries.length; i++) {
+            _requireNonZeroPrice(_prices[i]);
             storedPrice[_asset][_expiries[i]] = Price({price: _prices[i], timestamp: block.timestamp});
         }
     }
@@ -166,7 +167,7 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      */
     function setStablePrice(address _asset, uint256 _price) external onlyOwner {
         require(assetPricer[_asset] == address(0), "Oracle: could not set stable price for an asset with pricer");
-        require(_price != 0, "Oracle: stable price cannot be 0");
+        require(_price > 0, "Oracle: stable price cannot be 0");
 
         stablePrice[_asset] = _price;
 
@@ -183,6 +184,7 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function disputeExpiryPrice(address _asset, uint256 _expiryTimestamp, uint256 _price) external {
         require(msg.sender == disputer, "Oracle: caller is not the disputer");
         require(!isDisputePeriodOver(_asset, _expiryTimestamp), "Oracle: dispute period over");
+        _requireNonZeroPrice(_price);
 
         Price storage priceToUpdate = storedPrice[_asset][_expiryTimestamp];
 
@@ -205,6 +207,7 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(msg.sender == assetPricer[_asset], "Oracle: caller is not authorized to set expiry price");
         require(isLockingPeriodOver(_asset, _expiryTimestamp), "Oracle: locking period is not over yet");
         require(storedPrice[_asset][_expiryTimestamp].timestamp == 0, "Oracle: dispute period started");
+        _requireNonZeroPrice(_price);
 
         storedPrice[_asset][_expiryTimestamp] = Price({price: _price, timestamp: block.timestamp});
         emit ExpiryPriceUpdated(_asset, _expiryTimestamp, _price, block.timestamp);
@@ -223,6 +226,7 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             require(assetPricer[_asset] != address(0), "Oracle: Pricer for this asset not set");
 
             price = EnhancedPricerInterface(assetPricer[_asset]).getPrice();
+            _requireNonZeroPrice(price);
         }
 
         return price;
@@ -240,7 +244,11 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         bool isFinalized = true;
 
         if (price == 0) {
-            price = storedPrice[_asset][_expiryTimestamp].price;
+            Price memory storedPriceData = storedPrice[_asset][_expiryTimestamp];
+            price = storedPriceData.price;
+            if (storedPriceData.timestamp != 0) {
+                _requireNonZeroPrice(price);
+            }
             isFinalized = isDisputePeriodOver(_asset, _expiryTimestamp);
         }
 
@@ -348,5 +356,9 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
 
         return true;
+    }
+
+    function _requireNonZeroPrice(uint256 _price) internal pure {
+        require(_price > 0, "Oracle: price cannot be 0");
     }
 }
