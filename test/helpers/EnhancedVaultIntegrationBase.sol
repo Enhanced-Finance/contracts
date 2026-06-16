@@ -414,6 +414,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
     }
 
     function _seedUnderlyingSpotPrice() internal {
+        if (block.timestamp <= 1) {
+            vm.warp(2);
+        }
         vm.prank(bot);
         manualPricer.setExpiryPriceInOracle(block.timestamp - 1, SEEDED_UNDERLYING_PRICE);
     }

@@ -61,19 +61,46 @@ contract OracleZeroPriceSecurityTest is Test {
     }
 
     function testManualPricerRejectsZeroPriceBeforeOracleWrite() public {
-        ManualPricer manualPricerImpl = new ManualPricer();
-        ERC1967Proxy manualPricerProxy = new ERC1967Proxy(
-            address(manualPricerImpl),
-            abi.encodeCall(ManualPricer.initialize, (bot, asset, address(oracle), address(0xADD4E55B00), owner))
-        );
-        ManualPricer manualPricer = ManualPricer(address(manualPricerProxy));
-
-        vm.prank(owner);
-        oracle.setAssetPricer(asset, address(manualPricer));
+        ManualPricer manualPricer = _deployManualPricer();
 
         vm.prank(bot);
         vm.expectRevert("ManualPricer: price cannot be 0");
         manualPricer.setExpiryPriceInOracle(block.timestamp - 1, 0);
+    }
+
+    function testManualPricerRejectsSameExpiryTimestamp() public {
+        ManualPricer manualPricer = _deployManualPricer();
+
+        vm.prank(bot);
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 100, 100e8);
+
+        vm.prank(bot);
+        vm.expectRevert("ManualPricer: expiry timestamp must increase");
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 100, 101e8);
+    }
+
+    function testManualPricerRejectsEarlierUnregisteredExpiryTimestamp() public {
+        ManualPricer manualPricer = _deployManualPricer();
+
+        vm.prank(bot);
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 100, 100e8);
+
+        vm.prank(bot);
+        vm.expectRevert("ManualPricer: expiry timestamp must increase");
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 200, 101e8);
+    }
+
+    function testManualPricerAcceptsStrictlyIncreasingExpiryTimestamp() public {
+        ManualPricer manualPricer = _deployManualPricer();
+
+        vm.prank(bot);
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 200, 100e8);
+
+        vm.prank(bot);
+        manualPricer.setExpiryPriceInOracle(block.timestamp - 100, 101e8);
+
+        assertEq(manualPricer.lastExpiryTimestamp(), block.timestamp - 100);
+        assertEq(manualPricer.getPrice(), 101e8);
     }
 
     function testOracleSetExpiryPriceRejectsZeroPrice() public {
@@ -123,5 +150,20 @@ contract OracleZeroPriceSecurityTest is Test {
 
         vm.expectRevert("FixedPointInt256: division by zero");
         harness.div(1e8, 0);
+    }
+
+    function _deployManualPricer() private returns (ManualPricer manualPricer) {
+        ManualPricer manualPricerImpl = new ManualPricer();
+        ERC1967Proxy manualPricerProxy = new ERC1967Proxy(
+            address(manualPricerImpl),
+            abi.encodeCall(ManualPricer.initialize, (bot, asset, address(oracle), address(0xADD4E55B00), owner))
+        );
+        manualPricer = ManualPricer(address(manualPricerProxy));
+
+        vm.startPrank(owner);
+        oracle.setAssetPricer(asset, address(manualPricer));
+        manualPricer.setPriceTimeValidity(1 days);
+        manualPricer.setDeviationMultiplier(10_000);
+        vm.stopPrank();
     }
 }

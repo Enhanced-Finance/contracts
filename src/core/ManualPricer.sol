@@ -105,6 +105,7 @@ contract ManualPricer is EnhancedPricerInterface, OwnableUpgradeable, UUPSUpgrad
     function setExpiryPriceInOracle(uint256 _expiryTimestamp, uint256 _price) external onlyBot {
         require(_expiryTimestamp <= block.timestamp, "ManualPricer: expiries prices cannot be set for the future");
         require(_price > 0, "ManualPricer: price cannot be 0");
+        require(_expiryTimestamp > lastExpiryTimestamp, "ManualPricer: expiry timestamp must increase");
 
         uint256 previousPrice = historicalPrice[lastExpiryTimestamp];
 
