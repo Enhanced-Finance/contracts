@@ -1252,6 +1252,86 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(withdraws[1].amount, 40 ether, "second request should receive pro-rata share");
     }
 
+    function testSystemPauseFunds_ShouldUsePendingBuybackCollateralInHealthCheck() external {
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2);
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 40 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 20 ether);
+        vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(20 ether)));
+        _enableBuyback(VAULT_HASH, user);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+
+        vm.prank(operator);
+        vault.buyback(
+            VAULT_HASH,
+            users,
+            EnhancedVault.SwapParams({
+                amountIn: 20 ether, amountOutMinimum: 0, deadline: block.timestamp + 1 hours, fee: 3000
+            })
+        );
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(EnhancedVault.UserNotBelowMinPrincipalRatio.selector, user));
+        vault.systemPauseFunds(VAULT_HASH, users);
+    }
+
+    function testSystemPauseFunds_ShouldPauseWhenPendingBuybackCollateralIsInsufficient() external {
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2);
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 35 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 10 ether);
+        vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(10 ether)));
+        _enableBuyback(VAULT_HASH, user);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+
+        vm.prank(operator);
+        vault.buyback(
+            VAULT_HASH,
+            users,
+            EnhancedVault.SwapParams({
+                amountIn: 10 ether, amountOutMinimum: 0, deadline: block.timestamp + 1 hours, fee: 3000
+            })
+        );
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(operator);
+        vault.systemPauseFunds(VAULT_HASH, users);
+
+        EnhancedVault.UserFund memory fundAfterPause = _userFund(VAULT_HASH, user);
+        assertEq(fundAfterPause.activePrincipal, 0, "system pause should clear active when candidate is unhealthy");
+        assertEq(fundAfterPause.pendingActivePrincipal, 0, "system pause should absorb pending buyback collateral");
+        assertEq(
+            fundAfterPause.systemPausedPrincipal,
+            45 ether,
+            "settled active plus pending buyback should enter system-paused principal"
+        );
+    }
+
     function testSystemPauseFunds_ShouldRevert_WhenPhaseIsNotSettled() external {
         address[] memory users = new address[](1);
         users[0] = user;

@@ -350,6 +350,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     error RecordCycleMismatch();
     error InsufficientPendingAmount();
     error UserNotBelowMinPrincipalRatio(address user);
+    error WithdrawConversionPreviewMismatch();
     error FundNotFound();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1267,12 +1268,15 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
                 continue;
             }
             uint256 settledActive = _projectSettledActive(fund, cycleCumCollateral);
-            if (!_isBelowMinPrincipalRatio(st, settledActive, fund.initialAmountTotal)) {
+            (uint256 previewStopAmount, uint256 candidatePrincipal) =
+                _previewPrincipalCandidateAfterWithdrawConversion(fund, settledActive);
+            if (!_isBelowMinPrincipalRatio(st, candidatePrincipal, fund.initialAmountTotal)) {
                 revert UserNotBelowMinPrincipalRatio(user);
             }
             _materializeProjectedPremium(fund, cycleCumPremium);
 
             uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
+            if (stopAmount != previewStopAmount) revert WithdrawConversionPreviewMismatch();
             fund.initialAmountTotal = fund.initialAmountTotal >= stopAmount ? fund.initialAmountTotal - stopAmount : 0;
             unchecked {
                 fund.stoppedPrincipal += stopAmount;
@@ -1301,6 +1305,15 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     function _projectSettledActive(UserFund storage fund, uint256 cycleCumCollateral) internal view returns (uint256) {
         if (fund.activePrincipal == 0 || fund.entryCumCollateral == 0) return fund.activePrincipal;
         return fund.activePrincipal * cycleCumCollateral / fund.entryCumCollateral;
+    }
+
+    function _previewPrincipalCandidateAfterWithdrawConversion(UserFund storage fund, uint256 settledActive)
+        internal
+        view
+        returns (uint256 stopAmount, uint256 candidatePrincipal)
+    {
+        stopAmount = fund.pendingWithdrawAmount > settledActive ? settledActive : fund.pendingWithdrawAmount;
+        candidatePrincipal = settledActive - stopAmount + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
     }
 
     function _projectPremium(UserFund storage fund, uint256 cycleCumPremium) internal view returns (uint256) {
