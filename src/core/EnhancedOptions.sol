@@ -71,6 +71,9 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     ///      A non-zero entry both authorizes the (maker, custodian) pair and sets its custody limit;
     ///      bps == 0 means the custodian is not authorized to receive releases from this maker.
     mapping(address => mapping(address => uint256)) public makerCustodyLimitBps;
+    /// @dev owner => vaultId => maker that bought the short otokens minted from this vault.
+    ///      Appended after existing storage for upgrade safety.
+    mapping(address => mapping(uint256 => address)) public vaultMakers;
 
     /// @notice emits an event when there is a change in operator
     event OperatorChanged(address newOperator, address oldOperator);
@@ -133,6 +136,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     error CannotReleaseFromExpiredVault();
     error ExceedsVaultDeposit();
     error ExceedsMakerCustodyLimit();
+    error MakerNotVaultMaker();
     error SignatureAlreadyUsed();
     error InvalidOperationsArray();
     error InvalidActionsArray();
@@ -401,7 +405,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             }
 
             uint256 newOutstandingAmount = release.outstandingAmount + request.amount;
-            _validateCustodyLimit(request.owner, request.vaultId, request.asset, newOutstandingAmount, bps);
+            _validateCustodyLimit(maker, request.owner, request.vaultId, request.asset, newOutstandingAmount, bps);
 
             release.releasedAmount += request.amount;
             release.outstandingAmount = newOutstandingAmount;
@@ -1108,12 +1112,15 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     }
 
     function _validateCustodyLimit(
+        address maker,
         address owner,
         uint256 vaultId,
         address asset,
         uint256 newOutstandingAmount,
         uint256 bps
     ) internal view {
+        if (vaultMakers[owner][vaultId] != maker) revert MakerNotVaultMaker();
+
         (MarginVault.Vault memory vault,,) = controller.getVaultWithDetails(owner, vaultId);
         if (vault.shortOtokens.length > 0) {
             require(

@@ -23,6 +23,10 @@ contract EnhancedOptionsCustodyHarness is EnhancedOptions {
     function isTrackedReleaseVault(address owner, uint256 vaultId) external view returns (bool) {
         return isVaultReleaseTracked[owner][vaultId];
     }
+
+    function seedVaultMaker(address owner, uint256 vaultId, address maker) external {
+        vaultMakers[owner][vaultId] = maker;
+    }
 }
 
 contract EnhancedOptionsCustodyControllerMock {
@@ -213,7 +217,9 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
+        );
 
         assertEq(underlying.balanceOf(receiver), 3 ether);
 
@@ -225,13 +231,37 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         assertEq(outstandingAmount, 1 ether);
     }
 
+    function test_releaseAllowsTakerOwnedVaultWhenMakerMatchesVaultMaker() external {
+        address vaultOwner = address(0xCAFE);
+        _setMakerCustodyLimitBps(maker, receiver, 10000);
+        _setVaultCollateral(vaultOwner, 1, address(underlying), 1 ether);
+        underlying.mint(address(controller), 1 ether);
+
+        EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: vaultOwner, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
+        bytes memory sig = _signCustodyRelease(maker, receiver, 8, uint64(block.timestamp + 1 days), requests);
+
+        vm.prank(operator);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 8, uint64(block.timestamp + 1 days), requests, sig
+        );
+
+        assertEq(underlying.balanceOf(receiver), 1 ether);
+        (,,, uint256 outstandingAmount) = enhancedOptions.vaultCustodyReleases(vaultOwner, 1);
+        assertEq(outstandingAmount, 1 ether);
+    }
+
     function test_releaseRejectsUnauthorizedCustodian() external {
         EnhancedOptions.CustodyReleaseRequest[] memory requests = _custodyReleaseRequests();
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
         vm.expectRevert(EnhancedOptions.CustodianNotAuthorized.selector);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_releaseRejectsAmountAboveVaultDeposit() external {
@@ -240,13 +270,16 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         underlying.mint(address(controller), 2 ether);
 
         EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether + 1});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether + 1
+        });
         bytes memory sig = _signCustodyRelease(maker, receiver, 2, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
         vm.expectRevert(EnhancedOptions.ExceedsVaultDeposit.selector);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 2, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 2, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_releaseRejectsAmountAboveMakerCustodyLimit() external {
@@ -255,13 +288,16 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         underlying.mint(address(controller), 10 ether);
 
         EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 7 ether + 1});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 7 ether + 1
+        });
         bytes memory sig = _signCustodyRelease(maker, receiver, 3, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
         vm.expectRevert(EnhancedOptions.ExceedsMakerCustodyLimit.selector);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 3, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 3, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_releaseAllowsAmountAtMakerCustodyLimit() external {
@@ -270,16 +306,38 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         underlying.mint(address(controller), 10 ether);
 
         EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 7 ether});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 7 ether
+        });
         bytes memory sig = _signCustodyRelease(maker, receiver, 4, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 4, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 4, uint64(block.timestamp + 1 days), requests, sig
+        );
 
         assertEq(underlying.balanceOf(receiver), 7 ether);
         (,,, uint256 outstandingAmount) = enhancedOptions.vaultCustodyReleases(maker, 1);
         assertEq(outstandingAmount, 7 ether);
+    }
+
+    function test_releaseRejectsWhenMakerIsNotVaultMaker() external {
+        address vaultOwner = address(0xCAFE);
+        _setMakerCustodyLimitBps(maker, receiver, 10000);
+        controller.setVaultCollateral(vaultOwner, 1, address(underlying), 1 ether);
+        underlying.mint(address(controller), 1 ether);
+
+        EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: vaultOwner, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
+        bytes memory sig = _signCustodyRelease(maker, receiver, 5, uint64(block.timestamp + 1 days), requests);
+
+        vm.prank(operator);
+        vm.expectRevert(EnhancedOptions.MakerNotVaultMaker.selector);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 5, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_releaseRejectsWhenControllerFullyPaused() external {
@@ -288,13 +346,16 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         controller.setSystemFullyPaused(true);
 
         EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
         bytes memory sig = _signCustodyRelease(maker, receiver, 7, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
         vm.expectRevert(EnhancedOptions.SystemFullyPaused.selector);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 7, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 7, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_releaseRejectsExpiredVault() external {
@@ -305,13 +366,16 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         underlying.mint(address(controller), 10 ether);
 
         EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
         bytes memory sig = _signCustodyRelease(maker, receiver, 6, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
         vm.expectRevert(EnhancedOptions.CannotReleaseFromExpiredVault.selector);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 6, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 6, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function test_anyoneCanReturnFromCustody() external {
@@ -381,7 +445,9 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
         vm.prank(operator);
-        enhancedOptions.ingressoReleaseCollateralToCustody(maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
+        );
     }
 
     function _returnOnce() internal {
@@ -402,10 +468,12 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
 
     function _custodyReleaseRequests() internal view returns (EnhancedOptions.CustodyReleaseRequest[] memory requests) {
         requests = new EnhancedOptions.CustodyReleaseRequest[](2);
-        requests[0] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether});
-        requests[1] =
-            EnhancedOptions.CustodyReleaseRequest({owner: maker, vaultId: 2, asset: address(underlying), amount: 2 ether});
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
+        requests[1] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 2, asset: address(underlying), amount: 2 ether
+        });
     }
 
     function _seedMMarketOtokenBalance() internal {
@@ -466,6 +534,11 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
 
     function _setVaultCollateral(address vaultOwner, uint256 vaultId, address asset, uint256 amount) internal {
         controller.setVaultCollateral(vaultOwner, vaultId, asset, amount);
+        _seedVaultMaker(vaultOwner, vaultId, maker);
+    }
+
+    function _seedVaultMaker(address vaultOwner, uint256 vaultId, address targetMaker) internal {
+        enhancedOptions.seedVaultMaker(vaultOwner, vaultId, targetMaker);
     }
 
     function _signCustodyRelease(
@@ -477,7 +550,13 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
     ) internal view returns (bytes memory sig) {
         bytes32 structHash = keccak256(
             abi.encode(
-                CUSTODY_RELEASE_TYPEHASH, signer, signedReceiver, block.chainid, nonce, validUntil, _requestsHash(requests)
+                CUSTODY_RELEASE_TYPEHASH,
+                signer,
+                signedReceiver,
+                block.chainid,
+                nonce,
+                validUntil,
+                _requestsHash(requests)
             )
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _enhancedDomainSeparator(), structHash));
