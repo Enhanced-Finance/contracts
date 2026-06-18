@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SignatureChecker} from "lib/openzeppelin-contracts/contracts/utils/cryptography/SignatureChecker.sol";
+import {Math} from "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {OwnableUpgradeable} from "lib/openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {
@@ -590,11 +591,14 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         // System-pause fast path: user has pre-settled funds, bypass queue.
         if (fund.systemPausedPrincipal > 0) {
             if (amount > fund.systemPausedPrincipal) revert InsufficientPendingAmount();
+            uint256 settledCycleId = _settledCycleId(vaultHash);
+            uint256 principalBeforeExit = _projectSettledActive(fund, cumCollateral[vaultHash][settledCycleId])
+                + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+            _reduceInitialAmountProRata(fund, amount, principalBeforeExit);
             fund.systemPausedPrincipal -= amount;
             unchecked {
                 fund.stoppedPrincipal += amount;
             }
-            fund.initialAmountTotal = fund.initialAmountTotal >= amount ? fund.initialAmountTotal - amount : 0;
             uint256 _recordId = _addPendingWithdraw(vaultHash, msg.sender, amount);
             emit WithdrawRequested(vaultHash, msg.sender, _recordId, amount);
             return;
@@ -719,9 +723,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.entryCumCollateral = 0;
         fund.pendingActivePrincipal = 0;
         fund.systemPausedPrincipal = 0;
-        uint256 directPrincipal = pendingAmount + systemPausedAmount;
-        fund.initialAmountTotal =
-            fund.initialAmountTotal >= directPrincipal ? fund.initialAmountTotal - directPrincipal : 0;
+        _reduceInitialAmountProRata(fund, totalAmount, totalAmount);
 
         _releaseCollateral(st, msg.sender, totalAmount);
         // emit ClaimedActive(vaultHash, msg.sender, totalAmount);
@@ -950,7 +952,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 settledActive = _projectSettledActive(fund, cycleCumCollateral);
         _materializeProjectedPremium(fund, cycleCumPremium);
         uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
-        fund.initialAmountTotal = fund.initialAmountTotal >= stopAmount ? fund.initialAmountTotal - stopAmount : 0;
+        uint256 principalBeforeExit = settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+        _reduceInitialAmountProRata(fund, stopAmount, principalBeforeExit);
 
         uint256 remainingActive = settledActive - stopAmount;
         unchecked {
@@ -1277,7 +1280,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
             uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
             if (stopAmount != previewStopAmount) revert WithdrawConversionPreviewMismatch();
-            fund.initialAmountTotal = fund.initialAmountTotal >= stopAmount ? fund.initialAmountTotal - stopAmount : 0;
+            uint256 principalBeforeExit = settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+            _reduceInitialAmountProRata(fund, stopAmount, principalBeforeExit);
             unchecked {
                 fund.stoppedPrincipal += stopAmount;
             }
@@ -1343,6 +1347,19 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (initialAmountTotal == 0) return false;
         uint256 principalRatio = principal * RATIO_BASE / initialAmountTotal;
         return int256(principalRatio) < int256(st.params.minPrincipalRatio);
+    }
+
+    function _reduceInitialAmountProRata(UserFund storage fund, uint256 exitAmount, uint256 principalBeforeExit)
+        internal
+    {
+        uint256 initialAmountTotal = fund.initialAmountTotal;
+        if (exitAmount == 0 || initialAmountTotal == 0) return;
+        if (principalBeforeExit == 0 || exitAmount >= principalBeforeExit) {
+            fund.initialAmountTotal = 0;
+            return;
+        }
+        uint256 basisReduction = Math.mulDiv(initialAmountTotal, exitAmount, principalBeforeExit);
+        fund.initialAmountTotal = initialAmountTotal - basisReduction;
     }
 
     function _settlePreviousCycle(bytes32 vaultHash) internal {

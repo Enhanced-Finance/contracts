@@ -625,6 +625,48 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(withdraws[0].amount, 50 ether, "converted amount should clamp to settled active");
     }
 
+    function testProportionalBasisReduction_ShouldPreserveLossRatioOnPartialWithdraw() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 30 ether, "half of the settled collateral should remain active");
+        assertEq(fund.stoppedPrincipal, 30 ether, "half of the settled collateral should become claimable");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
+    }
+
+    function testFullWithdrawAfterLoss_ShouldClearInitialAmountTotal() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 100 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "all settled collateral should leave active principal");
+        assertEq(fund.stoppedPrincipal, 60 ether, "withdraw should clamp to settled collateral");
+        assertEq(fund.initialAmountTotal, 0, "a complete exit should clear the full cost basis");
+    }
+
     function testNextCycle_ShouldNotDoubleCount_WhenActiveUserDeposits() external {
         vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
         vault.seedCycleRecord(VAULT_HASH, 1, 100 ether, 100 ether);
@@ -1207,6 +1249,34 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(withdrawRequests.length, 0, "withdraw request records should be deleted during system pause");
         assertEq(withdraws.length, 1, "system pause should create one withdraw record");
         assertEq(withdraws[0].amount, 40 ether, "withdraw record amount mismatch");
+    }
+
+    function testSystemPauseFundsAfterLoss_ShouldReduceBasisProportionally() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+        vm.prank(operator);
+        vault.systemPauseFunds(VAULT_HASH, users);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.stoppedPrincipal, 30 ether, "half of settled collateral should become claimable");
+        assertEq(fund.systemPausedPrincipal, 30 ether, "half of settled collateral should remain paused");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
     }
 
     function testSystemPauseFunds_ShouldConvertMultipleWithdrawRequestsProRata_WhenSettledActiveIsInsufficient()

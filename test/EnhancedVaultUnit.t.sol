@@ -129,6 +129,15 @@ contract EnhancedVaultUnitHarness is EnhancedVault {
         userFunds[vaultHash][user].initialAmountTotal = amount;
     }
 
+    function seedSystemPausedPrincipalWithBasis(bytes32 vaultHash, address user, uint256 amount, uint256 basis)
+        external
+    {
+        UserFund storage fund = userFunds[vaultHash][user];
+        fund.systemPausedPrincipal = amount;
+        fund.initialAmountTotal = basis;
+        fund.exists = true;
+    }
+
     function seedSwapRouter(address router) external {
         swapRouter = router;
     }
@@ -607,6 +616,41 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
 
         EnhancedVault.UserFund memory fund = _userFund(user);
         assertEq(fund.systemPausedPrincipal, 0, "claimActive should clear system-paused principal");
+    }
+
+    function testSystemPausedWithdrawAfterLoss_ShouldReduceBasisProportionallyAndClearOnFullExit() external {
+        vault.seedSystemPausedPrincipalWithBasis(VAULT_HASH, user, 60 ether, 100 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.systemPausedPrincipal, 30 ether, "half of the paused collateral should remain");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        fund = _userFund(user);
+        assertEq(fund.systemPausedPrincipal, 0, "the final paused withdrawal should clear collateral");
+        assertEq(fund.initialAmountTotal, 0, "the final paused withdrawal should clear the cost basis");
+    }
+
+    function testClaimActiveAfterLoss_ShouldClearInitialAmountTotal() external {
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 0);
+        vault.seedCurrentCycleId(VAULT_HASH, 1);
+        vault.seedCumCollateral(VAULT_HASH, 1, 6e17);
+        vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.ENDED);
+
+        uint256 balanceBefore = collateral.balanceOf(user);
+        vm.prank(user);
+        vault.claimActive(VAULT_HASH);
+        uint256 balanceAfter = collateral.balanceOf(user);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(balanceAfter - balanceBefore, 60 ether, "claim should return the loss-adjusted collateral");
+        assertEq(fund.activePrincipal, 0, "claim should clear active principal");
+        assertEq(fund.initialAmountTotal, 0, "claiming the full position should clear the cost basis");
     }
 
     function testSetAssetApprovalSwapRouter_ShouldPersistConfiguredRouterApproval() external {
