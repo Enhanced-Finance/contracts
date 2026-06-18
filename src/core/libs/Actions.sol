@@ -304,40 +304,4 @@ library Actions {
             roundId: roundId
         });
     }
-
-    function _constructFlashLoanRedeemActionArgs(bytes calldata packedEncodedArgs)
-        internal
-        view
-        returns (ActionArgs memory, address, bytes memory, uint256)
-    {
-        uint256 len;
-        address otoken;
-        uint256 amount;
-        address redeemer;
-        uint256 maxAmountIn;
-        bytes memory uniswapRoute;
-
-        len = packedEncodedArgs.length;
-        otoken = address(bytes20(packedEncodedArgs[0:20]));
-        amount = uint256(bytes32(packedEncodedArgs[20:52]));
-        redeemer = address(bytes20(packedEncodedArgs[52:72]));
-        maxAmountIn = uint256(bytes32(packedEncodedArgs[72:104]));
-        uniswapRoute = packedEncodedArgs[104:len];
-
-        return (
-            ActionArgs({
-                actionType: Actions.ActionType.Redeem,
-                owner: address(0),
-                secondAddress: address(this), // redeem receiver is enhanced contract so funds can be swapped to repay loan
-                asset: otoken,
-                vaultId: 0,
-                amount: amount,
-                index: 0,
-                data: bytes("")
-            }),
-            redeemer,
-            uniswapRoute,
-            maxAmountIn
-        );
-    }
 }

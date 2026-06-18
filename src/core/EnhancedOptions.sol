@@ -8,9 +8,6 @@ import {Parser} from "./libs/Parser.sol";
 import {Actions} from "./libs/Actions.sol";
 import {MMarketOperations} from "./libs/MMarketOperations.sol";
 import {MarginVault} from "./libs/MarginVault.sol";
-// import {IOtoken} from "./interfaces/IOtoken.sol";
-// import {IAavePool} from "./interfaces/IAavePool.sol";
-// import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
 import {IController} from "./interfaces/IController.sol";
 import {IOtokenFactory} from "./interfaces/IOtokenFactory.sol";
 import {MarginCalculatorInterface} from "./interfaces/MarginCalculatorInterface.sol";
@@ -39,20 +36,12 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     IController public controller;
     /// @dev otokenfactory
     IOtokenFactory public factory;
-    /// @dev Hyperlend Pool contract - used for Flash Loans
-    address public flashLoanPool;
-    /// @dev Hyperswap router
-    address public swapRouter;
     /// @dev Margin pool contract
     address public marginPool;
     /// @dev Fee recipient
     address public feeRecipient;
     /// @dev Trusted enhanced signer for offchain quotes
     address public enhancedSigner;
-    /// @dev Period during ControllerLogic.redeemTimePeriod after which ITM options can be flash loan redeemed.
-    ///      If equal to or greater than redeemTimePeriod, there is no flash loan redeem period.
-    ///      If set to zero then the whole redeemTimePeriod allows flash loan redemptions.
-    uint256 flashLoanRedeemPeriodStart;
     /// @dev mapping to track used digests to prevent replay attacks
     mapping(bytes32 => bool) internal isDigestUsed;
     /// @dev addresses authorized to call ingressoNewTrustedTakerPosition and ingressoSettle without confirmation sig
@@ -204,18 +193,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         factory = IOtokenFactory(_factory);
     }
 
-    function setFlashLoanPool(address _flashLoanPool) external {
-        _checkOwner();
-        if (_flashLoanPool == ZERO_ADDRESS) revert ZeroAddress();
-        flashLoanPool = _flashLoanPool;
-    }
-
-    function setSwapRouter(address _swapRouter) external {
-        _checkOwner();
-        if (_swapRouter == ZERO_ADDRESS) revert ZeroAddress();
-        swapRouter = _swapRouter;
-    }
-
     function setMarginPool(address _marginPool) external {
         _checkOwner();
         if (_marginPool == ZERO_ADDRESS) revert ZeroAddress();
@@ -232,11 +209,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         _checkOwner();
         if (_enhancedSigner == ZERO_ADDRESS) revert ZeroAddress();
         enhancedSigner = _enhancedSigner;
-    }
-
-    function setFlashLoanRedeemPeriodStart(uint256 _flashLoanRedeemPeriodStart) external {
-        _checkOwner();
-        flashLoanRedeemPeriodStart = _flashLoanRedeemPeriodStart;
     }
 
     function setTrustedTaker(address _taker, bool _trusted) external {
@@ -878,98 +850,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         }
         controller.donate(_asset, _amount);
         emit Donated(_asset, _amount);
-    }
-
-    // /**
-    //  * @notice Executes a flash loan to this contract. Logic and repayment contained in executeOperation()
-    //  */
-    // function flashLoanRedeem(address asset, uint256 amount, bytes calldata params) external {
-    //     _checkOperator();
-
-    //     IAavePool(flashLoanPool).flashLoanSimple(address(this), asset, amount, params, 0);
-    // }
-
-    // /**
-    //  * @notice Callback from flash loan provider. Executes a physical option redemption using loaned funds, then swaps collateral back into borrowed asset to repay loan.
-    //  */
-    // function executeOperation(
-    //     address asset, // loaned asset
-    //     uint256 amount, // loaned amount
-    //     uint256 premium, // the fee amount to repay
-    //     address initiator, // the address of the flash loan initiator
-    //     bytes calldata params // params passed when initiating the flash loan
-    // )
-    //     external
-    //     nonReentrant
-    //     returns (bool)
-    // {
-    //     require(msg.sender == flashLoanPool, "Caller is not flashLoanPool");
-    //     require(initiator == address(this), "UNAUTHORIZED"); // make sure the flash loan call came from our access controlled function
-
-    //     (Actions.ActionArgs memory args, address redeemer, bytes memory swapRoute, uint256 amountInMaximum) =
-    //         Actions._constructFlashLoanRedeemActionArgs(params);
-
-    //     require(
-    //         block.timestamp > IOtoken(args.asset).expiryTimestamp() + flashLoanRedeemPeriodStart,
-    //         "flash loan redeem period not started"
-    //     );
-
-    //     _retrieveOtokenForFlashLoanRedeem(redeemer, args.asset, args.amount);
-
-    //     Actions.ActionArgs[] memory argsArray = new Actions.ActionArgs[](1);
-    //     argsArray[0] = args;
-
-    //     controller.operate(argsArray);
-
-    //     // ====== hyperswap tx ========
-    //     address collateral = IOtoken(args.asset).collateralAsset();
-
-    //     SafeTransferLib.safeApprove(ERC20(collateral), swapRouter, amountInMaximum);
-
-    //     {
-    //         ISwapRouter.ExactOutputParams memory swapParams = ISwapRouter.ExactOutputParams({
-    //             path: swapRoute,
-    //             recipient: address(this),
-    //             deadline: block.timestamp,
-    //             amountOut: premium + amount - ERC20(asset).balanceOf(address(this)),
-    //             amountInMaximum: amountInMaximum
-    //         });
-
-    //         // Executes the swap to repay loan
-    //         ISwapRouter(swapRouter).exactOutput(swapParams);
-    //     }
-    //     // zero out approval
-    //     SafeTransferLib.safeApprove(ERC20(collateral), swapRouter, 0);
-
-    //     // ====== send profit to redeemer ========
-    //     // no funds held on contract so any balance should belong to user
-    //     {
-    //         uint256 userProfitCollateral = ERC20(collateral).balanceOf(address(this));
-    //         SafeTransferLib.safeTransfer(ERC20(collateral), redeemer, userProfitCollateral);
-    //     }
-
-    //     // ====== Hyperlend flash loan repayment ========
-    //     SafeTransferLib.safeApprove(ERC20(asset), flashLoanPool, premium + amount);
-
-    //     return true;
-    // }
-
-    function _retrieveOtokenForFlashLoanRedeem(address redeemer, address otoken, uint256 amount) internal {
-        // create operation to withdraw otoken from mmarket
-        MMarketOperations.Operation[] memory operationsArray = new MMarketOperations.Operation[](1);
-        MMarketOperations.Operation memory withdrawOperation = MMarketOperations.Operation(
-            MMarketOperations.OperationType.Withdraw,
-            redeemer, // user to withdraw from
-            address(this), // withdraw to this address
-            otoken, // otoken address
-            address(0), // asset_2 not needed
-            amount, // amount of otoken to withdraw
-            0, // amount_2 not needed
-            bytes("0")
-        );
-        operationsArray[0] = withdrawOperation;
-
-        mmarket.operate(operationsArray);
     }
 
     /////////////// --  EIP-712 FUNCTIONS -- ///////////////
