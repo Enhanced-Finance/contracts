@@ -807,6 +807,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
                 })
             );
 
+        st.totalDeposited += amountOut;
         _allocateBuybackToUsers(vaultHash, users, premiumSpent, swapParams.amountIn, amountOut);
 
         emit BuybackExecuted(vaultHash, swapParams.amountIn, amountOut);

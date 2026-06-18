@@ -370,6 +370,24 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10)[0], user, "buyback user should be queued");
     }
 
+    function testBuyback_ShouldIncreaseTotalDepositedEvenWhenCapacityIsExceeded() external {
+        MockSwapRouterForVaultUnit router = new MockSwapRouterForVaultUnit(2 ether);
+        vault.seedSwapRouter(address(router));
+        _depositAs(user, 1 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 1 ether, 0, 8_000, -1_250, true, 1);
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vm.prank(operator);
+        vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+
+        (,,,, uint256 totalDeposited,,) = vault.vaults(VAULT_HASH);
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(totalDeposited, 3 ether, "buyback output should increase total deposited beyond capacity");
+        assertEq(fund.initialAmountTotal, 1 ether, "buyback should not increase the user's initial principal basis");
+    }
+
     function testDeposit_ShouldDefaultNewUserFundToBuybackEnabled() external {
         _depositAs(user, 1 ether);
 
