@@ -140,6 +140,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         oracle = OracleInterface(_oracle);
         addressBook = AddressBookInterface(_addressBook);
         ZERO = FPI.fromScaledUint(0, BASE);
+        liquidationMultiplier = MAX_BPS;
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
