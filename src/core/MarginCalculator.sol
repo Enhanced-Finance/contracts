@@ -492,19 +492,10 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
             shortUnderlyingPrice: FPI.fromScaledUint(price, BASE)
         });
 
-        bytes32 productHash = _getProductHash(
-            vaultDetails.shortUnderlyingAsset,
-            vaultDetails.shortStrikeAsset,
-            vaultDetails.shortCollateralAsset,
-            vaultDetails.isShortPut
-        );
-
         // convert vault collateral to a fixed point (1e27) from collateral decimals
         FPI.FixedPointInt memory depositedCollateral =
             FPI.fromScaledUint(_vault.collateralAmounts[0], vaultDetails.collateralDecimals);
-        OptionType opType = getOptionType(
-            vaultDetails.isShortPut, vaultDetails.shortCollateralAsset, vaultDetails.shortUnderlyingAsset
-        );
+
         (, FPI.FixedPointInt memory collateralRequired) = _getMarginRequired(_vault, vaultDetails);
 
         // if collateral required <= collateral in the vault, the vault is not liquidatable
