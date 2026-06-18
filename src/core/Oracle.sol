@@ -309,6 +309,9 @@ contract Oracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             require(assetPricer[_asset] != address(0), "Oracle: Pricer for this asset not set");
 
             (price, timestamp) = EnhancedPricerInterface(assetPricer[_asset]).getHistoricalPrice(_roundId);
+            _requireNonZeroPrice(price);
+            require(timestamp > 0, "Oracle: historical timestamp cannot be 0");
+            require(timestamp <= block.timestamp, "Oracle: historical timestamp cannot be in the future");
         }
 
         return (price, timestamp);

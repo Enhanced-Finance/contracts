@@ -21,6 +21,24 @@ contract ZeroPricer is EnhancedPricerInterface {
     }
 }
 
+contract HistoricalPricer is EnhancedPricerInterface {
+    uint256 private immutable HISTORICAL_PRICE;
+    uint256 private immutable HISTORICAL_TIMESTAMP;
+
+    constructor(uint256 _historicalPrice, uint256 _historicalTimestamp) {
+        HISTORICAL_PRICE = _historicalPrice;
+        HISTORICAL_TIMESTAMP = _historicalTimestamp;
+    }
+
+    function getPrice() external pure returns (uint256) {
+        return 1e8;
+    }
+
+    function getHistoricalPrice(uint80) external view returns (uint256, uint256) {
+        return (HISTORICAL_PRICE, HISTORICAL_TIMESTAMP);
+    }
+}
+
 contract FixedPointHarness {
     using FPI for FPI.FixedPointInt;
 
@@ -58,6 +76,47 @@ contract OracleZeroPriceSecurityTest is Test {
 
         vm.expectRevert("Oracle: price cannot be 0");
         oracle.getPrice(asset);
+    }
+
+    function testOracleRejectsZeroHistoricalPriceFromDynamicPricer() public {
+        _setHistoricalPricer(0, block.timestamp - 1);
+
+        vm.expectRevert("Oracle: price cannot be 0");
+        oracle.getChainlinkRoundData(asset, 1);
+    }
+
+    function testOracleRejectsZeroHistoricalTimestampFromDynamicPricer() public {
+        _setHistoricalPricer(100e8, 0);
+
+        vm.expectRevert("Oracle: historical timestamp cannot be 0");
+        oracle.getChainlinkRoundData(asset, 1);
+    }
+
+    function testOracleRejectsFutureHistoricalTimestampFromDynamicPricer() public {
+        _setHistoricalPricer(100e8, block.timestamp + 1);
+
+        vm.expectRevert("Oracle: historical timestamp cannot be in the future");
+        oracle.getChainlinkRoundData(asset, 1);
+    }
+
+    function testOracleReturnsValidHistoricalRoundFromDynamicPricer() public {
+        uint256 historicalTimestamp = block.timestamp - 1;
+        _setHistoricalPricer(100e8, historicalTimestamp);
+
+        (uint256 price, uint256 timestamp) = oracle.getChainlinkRoundData(asset, 1);
+
+        assertEq(price, 100e8);
+        assertEq(timestamp, historicalTimestamp);
+    }
+
+    function testOracleReturnsStablePriceWithCurrentTimestamp() public {
+        vm.prank(owner);
+        oracle.setStablePrice(asset, 1e8);
+
+        (uint256 price, uint256 timestamp) = oracle.getChainlinkRoundData(asset, 1);
+
+        assertEq(price, 1e8);
+        assertEq(timestamp, block.timestamp);
     }
 
     function testManualPricerRejectsZeroPriceBeforeOracleWrite() public {
@@ -165,5 +224,11 @@ contract OracleZeroPriceSecurityTest is Test {
         manualPricer.setPriceTimeValidity(1 days);
         manualPricer.setDeviationMultiplier(10_000);
         vm.stopPrank();
+    }
+
+    function _setHistoricalPricer(uint256 historicalPrice, uint256 historicalTimestamp) private {
+        HistoricalPricer historicalPricer = new HistoricalPricer(historicalPrice, historicalTimestamp);
+        vm.prank(owner);
+        oracle.setAssetPricer(asset, address(historicalPricer));
     }
 }
