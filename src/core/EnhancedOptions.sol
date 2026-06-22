@@ -115,6 +115,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     error ArrayLengthMismatch();
     error ReturnExceedsOutstanding();
     error InvalidQuoteSignature();
+    error QuoteAuthorizationExpired();
     error InvalidConfirmationSignature();
     error TakerMustBeCaller();
     error InvalidTransferSignature();
@@ -455,7 +456,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         }
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        _executeNewPosition(sellerConfirmation, fee);
+        _executeNewPosition(sellerConfirmation, mmQuote.validUntil, fee);
     }
 
     /**
@@ -485,7 +486,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         require(sellerConfirmation.taker == msg.sender, TakerMustBeCaller());
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, fee);
     }
 
     /**
@@ -526,7 +527,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             revert InvalidConfirmationSignature();
         }
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, fee);
     }
 
     /**
@@ -552,7 +553,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         require(sellerConfirmation.taker == msg.sender, TakerMustBeCaller());
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, fee);
     }
 
     /**
@@ -566,10 +567,12 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
      *         6. Operations.Withdraw (withdraw premium to seller's wallet)
      *         7. CONDITIONAL Operations.Withdraw (fee payment)
      */
-    function _executeNewPosition(Parser.Confirmation memory sellerConfirmation, uint256 fee)
+    function _executeNewPosition(Parser.Confirmation memory sellerConfirmation, uint64 validUntil, uint256 fee)
         internal
         returns (uint256 vaultId, uint256 totalPremium)
     {
+        if (block.timestamp > validUntil) revert QuoteAuthorizationExpired();
+
         vaultId = controller.getAccountVaultCounter(sellerConfirmation.taker) + 1;
         totalPremium = sellerConfirmation.quantity * sellerConfirmation.price
             * (10 ** ERC20(sellerConfirmation.usd).decimals()) / 1e36;
