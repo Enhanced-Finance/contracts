@@ -1096,7 +1096,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(_currentCycleId(VAULT_HASH), 2);
     }
 
-    function testSystemPauseFunds_ShouldInlineSettleUser_AndWithdrawShouldConvertToClaimableRecord() external {
+    function testSystemPauseFunds_ShouldInlineSettleUser_AndWithdrawAfterCycleStartShouldConvertToClaimableRecord()
+        external
+    {
         vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
 
         address user2 = vm.addr(0xD00D);
@@ -1130,6 +1132,38 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(afterPause.systemPausedPrincipal, 101 ether, "system pause should stage the full force-exit amount");
 
         vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        vm.prank(operator);
+        vault.processQueuedUsers(VAULT_HASH, 0, 2);
+
+        EnhancedVault.CycleRecord memory nextCycleAfterQueue = _cycleRecord(VAULT_HASH, 3);
+        assertEq(
+            nextCycleAfterQueue.totalActiveCollateral,
+            50 ether,
+            "system-paused user should be removed from next-cycle active"
+        );
+        assertEq(
+            nextCycleAfterQueue.remainingActiveCollateral, 50 ether, "remaining active should shrink by paused amount"
+        );
+
+        EnhancedVault.UserFund memory fundBeforeStart = _userFund(VAULT_HASH, user);
+        assertEq(fundBeforeStart.activePrincipal, 0, "user active should be zeroed in processing window");
+        assertEq(fundBeforeStart.stoppedPrincipal, 0, "no principal should be claimable before an OPEN-phase withdraw");
+        assertEq(fundBeforeStart.systemPausedPrincipal, 101 ether, "system-paused principal should remain staged");
+
+        vm.prank(operator);
+        vault.startNextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "system-paused user should not join next cycle active");
+        assertEq(fund.stoppedPrincipal, 0, "stopped principal should remain empty after cycle start");
+        assertEq(
+            fund.systemPausedPrincipal, 101 ether, "staged system-paused principal should persist across cycle start"
+        );
+
+        vm.prank(user);
         vault.withdraw(VAULT_HASH, 1 ether);
 
         EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
@@ -1152,37 +1186,12 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         uint256 balanceAfter = collateral.balanceOf(user);
         assertEq(balanceAfter - balanceBefore, 1 ether, "claim should transfer only the converted amount");
 
-        vm.prank(operator);
-        vault.processQueuedUsers(VAULT_HASH, 0, 2);
-
-        EnhancedVault.CycleRecord memory nextCycleAfterQueue = _cycleRecord(VAULT_HASH, 3);
-        assertEq(
-            nextCycleAfterQueue.totalActiveCollateral,
-            50 ether,
-            "system-paused user should be removed from next-cycle active"
-        );
-        assertEq(
-            nextCycleAfterQueue.remainingActiveCollateral, 50 ether, "remaining active should shrink by paused amount"
-        );
-
-        EnhancedVault.UserFund memory fundBeforeStart = _userFund(VAULT_HASH, user);
-        assertEq(fundBeforeStart.activePrincipal, 0, "user active should be zeroed in processing window");
-        assertEq(fundBeforeStart.stoppedPrincipal, 0, "claim should consume stopped principal");
-        assertEq(
-            fundBeforeStart.systemPausedPrincipal, 100 ether, "unwithdrawn system-paused principal should remain staged"
-        );
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "system-paused user should remain outside active principal");
+        assertEq(fund.stoppedPrincipal, 0, "claim should consume stopped principal");
+        assertEq(fund.systemPausedPrincipal, 100 ether, "unwithdrawn system-paused principal should remain staged");
         assertEq(
             vault.getPendingWithdraws(VAULT_HASH, user).length, 0, "claim should clear the pending withdraw record"
-        );
-
-        vm.prank(operator);
-        vault.startNextCycle(VAULT_HASH);
-
-        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
-        assertEq(fund.activePrincipal, 0, "system-paused user should not join next cycle active");
-        assertEq(fund.stoppedPrincipal, 0, "claimed principal should stay cleared after cycle start");
-        assertEq(
-            fund.systemPausedPrincipal, 100 ether, "staged system-paused principal should persist across cycle start"
         );
 
         MockSwapRouterForVaultQueue router = new MockSwapRouterForVaultQueue(12 ether);
@@ -1506,7 +1515,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(userWithdraws[0].amount, 40 ether, "withdraw-request conversion should happen once");
     }
 
-    function testSettleToStartWindow_ShouldFreezeWriteEntrypointsExceptWithdraw() external {
+    function testSettleToStartWindow_ShouldFreezeFundMutationEntrypoints() external {
         _depositAs(user, VAULT_HASH, 100 ether);
         vault.seedActiveUserFund(VAULT_HASH, user, 10 ether, 1e18, 0);
 
@@ -1519,9 +1528,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.deposit(VAULT_HASH, 1 ether);
 
         vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
         vault.withdraw(VAULT_HASH, 1 ether);
-        EnhancedVault.FundRecord[] memory withdrawRequests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
-        assertEq(withdrawRequests.length, 1, "withdraw should be allowed outside OPEN when vault active");
 
         address[] memory users = new address[](1);
         users[0] = user;

@@ -189,9 +189,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     /// @dev vaultHash → user → whether currently queued
     mapping(bytes32 => mapping(address => bool)) public queued;
-    /// @dev vaultHash → users that submitted withdraw requests outside OPEN and must be queued on next OPEN
+    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
     mapping(bytes32 => address[]) private _deferredQueueUsers;
-    /// @dev vaultHash → user → whether already in deferred queue list
+    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
     mapping(bytes32 => mapping(address => bool)) private _deferredQueued;
     /// @dev vaultHash → cycle phase
     mapping(bytes32 => CyclePhase) public vaultPhases;
@@ -585,7 +585,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (amount == 0) revert ZeroAmount();
 
         _requireActiveAndNotPaused(vaultHash);
-        if (vaultPhases[vaultHash] == CyclePhase.ENDED) revert InvalidCyclePhase();
+        _requireOpenPhase(vaultHash);
         UserFund storage fund = userFunds[vaultHash][msg.sender];
         // System-pause fast path: user has pre-settled funds, bypass queue.
         if (fund.systemPausedPrincipal > 0) {
@@ -608,21 +608,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         // runtime-size-expensive check in both the public entrypoint and the record constructor.
         uint256 recordId = _addPendingWithdrawRequest(vaultHash, msg.sender, amount);
 
-        CyclePhase phase = vaultPhases[vaultHash];
-        if (phase == CyclePhase.OPEN) {
-            _enqueueUser(vaultHash, msg.sender);
-        } else if (phase == CyclePhase.SETTLED) {
-            CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
-            bool willProcessInCurrentSnapshot =
-                queued[vaultHash][msg.sender] && _processedQueueCycle[vaultHash][msg.sender] != advance.settledCycleId;
-            if (!willProcessInCurrentSnapshot) {
-                _markDeferredQueueUser(vaultHash, msg.sender);
-            }
-        } else if (_transitionQueues[vaultHash].queueCycleId == _cycleAdvanceStates[vaultHash].nextCycleId) {
-            _enqueueUser(vaultHash, msg.sender);
-        } else {
-            _markDeferredQueueUser(vaultHash, msg.sender);
-        }
+        _enqueueUser(vaultHash, msg.sender);
 
         emit WithdrawRequested(vaultHash, msg.sender, recordId, amount);
     }
@@ -723,11 +709,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.activePrincipal = 0;
         fund.entryCumCollateral = 0;
         fund.pendingActivePrincipal = 0;
-        fund.pendingWithdrawAmount = 0;
         fund.systemPausedPrincipal = 0;
-        _clearPendingWithdrawRequests(vaultHash, msg.sender);
-        queued[vaultHash][msg.sender] = false;
-        _deferredQueued[vaultHash][msg.sender] = false;
         _reduceInitialAmountProRata(fund, totalAmount, totalAmount);
 
         _releaseCollateral(st, msg.sender, totalAmount);
@@ -1220,54 +1202,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         _startNextCycle(vaultHash);
     }
 
-    function flushDeferredQueueUsers(bytes32 vaultHash, uint256 limit)
-        external
-        nonReentrant
-        onlyOperator
-        vaultExists(vaultHash)
-    {
-        _requireActiveAndNotEnded(vaultHash);
-        _flushDeferredQueueUsers(vaultHash, limit);
-    }
-
-    function _flushDeferredQueueUsers(bytes32 vaultHash, uint256 limit) internal {
-        if (vaultPhases[vaultHash] != CyclePhase.PROCESSING_DONE) revert InvalidCyclePhase();
-        if (limit == 0 || limit > MAX_BATCH_SIZE) revert InvalidBatchSize();
-
-        TransitionQueue storage queue = _transitionQueues[vaultHash];
-        CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
-        if (!advance.initialized) revert InvalidCyclePhase();
-
-        uint256 remainingLimit = limit;
-        if (queue.queueCycleId != advance.nextCycleId) {
-            if (queue.processedCount != queue.queueLenSnapshot) revert QueueProcessingIncomplete();
-
-            while (remainingLimit != 0 && queue.users.length != 0) {
-                queue.users.pop();
-                unchecked {
-                    --remainingLimit;
-                }
-            }
-            if (queue.users.length != 0) return;
-
-            queue.processedCount = 0;
-            queue.queueLenSnapshot = _deferredQueueUsers[vaultHash].length;
-            queue.queueCycleId = advance.nextCycleId;
-        }
-
-        address[] storage deferredUsers = _deferredQueueUsers[vaultHash];
-        while (remainingLimit != 0 && deferredUsers.length != 0) {
-            address user = deferredUsers[deferredUsers.length - 1];
-            deferredUsers.pop();
-            _deferredQueued[vaultHash][user] = false;
-            _enqueueUser(vaultHash, user);
-            unchecked {
-                ++queue.processedCount;
-                --remainingLimit;
-            }
-        }
-    }
-
     /**
      * @notice Terminate the vault after the final cycle has been fully settled and queue
      *         processed. Transitions the phase to ENDED so users can call claimActive().
@@ -1282,12 +1216,10 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (vaultPhases[vaultHash] != CyclePhase.PROCESSING_DONE) revert InvalidCyclePhase();
 
         TransitionQueue storage queue = _transitionQueues[vaultHash];
-        CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
-        if (queue.queueCycleId != advance.nextCycleId && queue.processedCount != queue.queueLenSnapshot) {
-            revert QueueProcessingIncomplete();
-        }
+        if (queue.processedCount != queue.queueLenSnapshot) revert QueueProcessingIncomplete();
 
         // Apply cap reduction and finalize (mirrors _startNextCycle bookkeeping, but does not open a new cycle)
+        CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
         if (advance.initialized) {
             _decreaseTotalDeposited(st, advance.capReduction);
             delete _cycleAdvanceStates[vaultHash];
@@ -1464,26 +1396,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
         if (!advance.initialized) revert InvalidCyclePhase();
-        if (queue.queueCycleId != advance.nextCycleId) {
-            if (_deferredQueueUsers[vaultHash].length != 0) revert QueueProcessingIncomplete();
-
-            uint256 cleanupLimit = MAX_BATCH_SIZE;
-            while (cleanupLimit != 0 && queue.users.length != 0) {
-                queue.users.pop();
-                unchecked {
-                    --cleanupLimit;
-                }
-            }
-            if (queue.users.length != 0) revert QueueProcessingIncomplete();
-
-            queue.queueLenSnapshot = 0;
-            queue.processedCount = 0;
-            queue.queueCycleId = advance.nextCycleId;
-        } else {
-            if (_deferredQueueUsers[vaultHash].length != 0) revert QueueProcessingIncomplete();
-            queue.queueLenSnapshot = 0;
-            queue.processedCount = 0;
-        }
 
         VaultState storage st = vaults[vaultHash];
         _decreaseTotalDeposited(st, advance.capReduction);
@@ -1499,6 +1411,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         delete _cycleAdvanceStates[vaultHash];
+        _resetTransitionQueue(queue, st.currentCycleId);
 
         vaultPhases[vaultHash] = CyclePhase.OPEN;
     }
@@ -1595,10 +1508,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         queueLen = phase == CyclePhase.OPEN ? queue.users.length : queue.queueLenSnapshot;
         processedCount = queue.processedCount;
         remaining = queueLen > processedCount ? queueLen - processedCount : 0;
-        CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
-        canStartNextCycle = phase == CyclePhase.PROCESSING_DONE && remaining == 0
-            && _deferredQueueUsers[vaultHash].length == 0
-            && (queue.queueCycleId == advance.nextCycleId || queue.users.length <= MAX_BATCH_SIZE);
+        canStartNextCycle = phase == CyclePhase.PROCESSING_DONE && remaining == 0;
     }
 
     function getQueueUsers(bytes32 vaultHash, uint256 offset, uint256 limit) external view returns (address[] memory) {
@@ -1688,14 +1598,11 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         IERC20(asset).safeTransfer(to, amount);
     }
 
-    function _clearPendingWithdrawRequests(bytes32 vaultHash, address user) internal {
-        uint256[] storage ids = pendingWithdrawRequestIds[vaultHash][user];
-        while (ids.length != 0) {
-            uint256 recordId = ids[ids.length - 1];
-            ids.pop();
-            delete pendingWithdrawRequestIndex[vaultHash][user][recordId];
-            delete pendingWithdrawRequestRecords[vaultHash][user][recordId];
-        }
+    function _resetTransitionQueue(TransitionQueue storage queue, uint256 queueCycleId) internal {
+        delete queue.users;
+        queue.queueLenSnapshot = 0;
+        queue.processedCount = 0;
+        queue.queueCycleId = queueCycleId;
     }
 
     function _requireActive(bytes32 vaultHash) internal view {
@@ -1726,11 +1633,5 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         queued[vaultHash][user] = true;
         _transitionQueues[vaultHash].users.push(user);
         // emit UserQueued(vaultHash, user);
-    }
-
-    function _markDeferredQueueUser(bytes32 vaultHash, address user) internal {
-        if (_deferredQueued[vaultHash][user]) return;
-        _deferredQueued[vaultHash][user] = true;
-        _deferredQueueUsers[vaultHash].push(user);
     }
 }
