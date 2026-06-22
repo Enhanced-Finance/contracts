@@ -4,11 +4,21 @@ pragma solidity ^0.8.28;
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 import {Actions} from "../../../core/libs/Actions.sol";
+import {Parser} from "../../../core/libs/Parser.sol";
 import {IEnhancedOptions} from "../../../core/interfaces/IEnhancedOptions.sol";
 import {EnhancedVault} from "../EnhancedVault.sol";
 
 library EnhancedVaultCycleLib {
     uint256 internal constant PRECISION = 1e18;
+
+    error ExpiryInPast();
+    error MustBeCashSettled();
+    error WrongCollateral();
+    error WrongExpiry();
+    error WrongOptionType();
+    error WrongStrikeAsset();
+    error WrongTaker();
+    error WrongUnderlying();
 
     function settleCycleAndUpdateAccumulators(
         IEnhancedOptions enhancedOptions,
@@ -85,5 +95,31 @@ library EnhancedVaultCycleLib {
         nextRec.remainingActiveCollateral = nextRec.totalActiveCollateral;
 
         capReduction = activeCol > cycleCollateralAfterSettle ? activeCol - cycleCollateralAfterSettle : 0;
+    }
+
+    function validateOrder(
+        EnhancedVault.VaultParams storage params,
+        bytes calldata payload,
+        uint256 currentCycleStart,
+        address taker
+    ) public view returns (uint256 orderCollateral) {
+        (
+            /* Quote */,
+            Parser.Confirmation memory conf,
+            /* quoteSig */,
+            /* confSig */,
+            /* fee */
+        ) = Parser.parseQuoteAndConfirmation(payload);
+
+        if (uint256(conf.expiry) < block.timestamp) revert ExpiryInPast();
+        if (conf.taker != taker) revert WrongTaker();
+        if (uint256(conf.expiry) != currentCycleStart + params.cycleDuration) revert WrongExpiry();
+        if (conf.isPhysicallySettled) revert MustBeCashSettled();
+        if (conf.assetAddress != params.underlyingAsset) revert WrongUnderlying();
+        if (conf.collateralAsset != params.collateralAsset) revert WrongCollateral();
+        if (conf.usd != params.strikeAsset) revert WrongStrikeAsset();
+        if (conf.isPut != params.isPut) revert WrongOptionType();
+
+        return conf.collateralAmount;
     }
 }

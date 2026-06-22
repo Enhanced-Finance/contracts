@@ -58,6 +58,7 @@ interface IEnhancedVault {
     function claimPremium(bytes32 vaultHash, uint256 amount) external;
     function claimActive(bytes32 vaultHash) external;
     function setBuybackEnabled(bytes32 vaultHash, bool enabled) external;
+    function flushDeferredQueueUsers(bytes32 vaultHash, uint256 limit) external;
     function endVault(bytes32 vaultHash) external;
     function getMyPosition(bytes32 vaultHash, address user) external view returns (UserPosition memory);
     function getPendingDeposits(bytes32 vaultHash, address user) external view returns (FundRecord[] memory);

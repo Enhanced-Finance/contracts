@@ -289,6 +289,9 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
 
         vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.PROCESSING_DONE);
         vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 1);
+
+        vm.prank(operator);
         vault.startNextCycle(VAULT_HASH);
 
         address[] memory queuedUsers = vault.getQueueUsers(VAULT_HASH, 0, 10);
@@ -310,11 +313,231 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10).length, 0, "processing-done withdraw should defer queueing");
 
         vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 1);
+
+        vm.prank(operator);
         vault.startNextCycle(VAULT_HASH);
 
         address[] memory queuedUsers = vault.getQueueUsers(VAULT_HASH, 0, 10);
         assertEq(queuedUsers.length, 1, "deferred user should be queued for the reopened cycle");
         assertEq(queuedUsers[0], user, "deferred queue user mismatch");
+    }
+
+    function testFlushDeferredQueueUsers_ShouldMigrateInBoundedBatchesBeforeStart() external {
+        uint256 userCount = 401;
+        vault.seedCycleRecord(VAULT_HASH, 1, userCount * 1 ether, userCount * 1 ether);
+
+        address[] memory deferredUsers = new address[](userCount);
+        for (uint256 i; i < userCount; ++i) {
+            address deferredUser = address(uint160(0x1000 + i));
+            deferredUsers[i] = deferredUser;
+            vault.seedUserFundState(VAULT_HASH, deferredUser, 1 ether, 1 ether, 1e18, 0);
+        }
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        for (uint256 i; i < userCount; ++i) {
+            vm.prank(deferredUsers[i]);
+            vault.withdraw(VAULT_HASH, 1);
+        }
+
+        (,,,, bool canStartNextCycle) = vault.getQueueProgress(VAULT_HASH);
+        assertFalse(canStartNextCycle, "deferred users should block the next cycle");
+
+        vm.prank(operator);
+        vm.expectRevert(EnhancedVault.QueueProcessingIncomplete.selector);
+        vault.startNextCycle(VAULT_HASH);
+
+        uint256 gasBefore = gasleft();
+        vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 100);
+        uint256 flushGasUsed = gasBefore - gasleft();
+
+        assertEq(vault.getQueueUsers(VAULT_HASH, 0, userCount).length, 100, "first batch should enqueue 100 users");
+        assertLt(flushGasUsed, 16_777_216, "one maximum-sized flush must fit the EIP-7825 transaction gas cap");
+        (,,,, canStartNextCycle) = vault.getQueueProgress(VAULT_HASH);
+        assertFalse(canStartNextCycle, "partial migration should keep the next cycle blocked");
+
+        for (uint256 i; i < 4; ++i) {
+            vm.prank(operator);
+            vault.flushDeferredQueueUsers(VAULT_HASH, 100);
+        }
+
+        (,,,, canStartNextCycle) = vault.getQueueProgress(VAULT_HASH);
+        assertTrue(canStartNextCycle, "all deferred users should eventually migrate");
+
+        vm.prank(operator);
+        vault.startNextCycle(VAULT_HASH);
+
+        assertEq(
+            uint256(vault.vaultPhases(VAULT_HASH)),
+            uint256(EnhancedVault.CyclePhase.OPEN),
+            "new cycle should open only after migration completes"
+        );
+        assertEq(vault.getQueueUsers(VAULT_HASH, 0, userCount).length, userCount, "no deferred user should be lost");
+    }
+
+    function testFlushDeferredQueueUsers_ShouldShareLimitBetweenOldQueueCleanupAndDeferredMigration() external {
+        uint256 oldUserCount = 75;
+        uint256 deferredUserCount = 50;
+        vault.seedCycleRecord(VAULT_HASH, 1, oldUserCount * 1 ether, oldUserCount * 1 ether);
+
+        for (uint256 i; i < oldUserCount; ++i) {
+            address oldUser = address(uint160(0xB000 + i));
+            vault.seedUserFundState(VAULT_HASH, oldUser, 1 ether, 1 ether, 1e18, 0);
+            collateral.mint(oldUser, 1 ether);
+            vm.prank(oldUser);
+            collateral.approve(address(vault), type(uint256).max);
+            vm.prank(oldUser);
+            vault.deposit(VAULT_HASH, 1);
+        }
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+        vm.prank(operator);
+        vault.processQueuedUsers(VAULT_HASH, 0, 75);
+
+        for (uint256 i; i < deferredUserCount; ++i) {
+            address deferredUser = address(uint160(0xC000 + i));
+            vault.seedUserFundState(VAULT_HASH, deferredUser, 1 ether, 1 ether, 1e18, 0);
+            vm.prank(deferredUser);
+            vault.withdraw(VAULT_HASH, 1);
+        }
+
+        vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 100);
+
+        assertEq(
+            vault.getQueueUsers(VAULT_HASH, 0, 100).length,
+            25,
+            "one call should spend 75 operations clearing the old queue and migrate only 25 deferred users"
+        );
+        (,,, uint256 remaining, bool canStartNextCycle) = vault.getQueueProgress(VAULT_HASH);
+        assertEq(remaining, 25, "the remaining deferred snapshot should stay visible");
+        assertFalse(canStartNextCycle, "partial migration should not start the next cycle");
+    }
+
+    function testWithdrawDuringDeferredMigration_ShouldDirectlyEnqueueWithoutDuplicates() external {
+        address deferredUser = address(0xA001);
+        address otherDeferredUser = address(0xA002);
+        address lateUser = address(0xA003);
+
+        vault.seedUserFundState(VAULT_HASH, deferredUser, 10 ether, 10 ether, 1e18, 0);
+        vault.seedUserFundState(VAULT_HASH, otherDeferredUser, 10 ether, 10 ether, 1e18, 0);
+        vault.seedUserFundState(VAULT_HASH, lateUser, 10 ether, 10 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 30 ether, 30 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(deferredUser);
+        vault.withdraw(VAULT_HASH, 1 ether);
+        vm.prank(otherDeferredUser);
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 1);
+
+        vm.prank(deferredUser);
+        vault.withdraw(VAULT_HASH, 1 ether);
+        vm.prank(lateUser);
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10).length, 3, "new withdraws should enter the next-cycle queue");
+
+        vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 1);
+
+        address[] memory queuedUsers = vault.getQueueUsers(VAULT_HASH, 0, 10);
+        assertEq(queuedUsers.length, 3, "each next-cycle user should be queued exactly once");
+    }
+
+    function testEndVaultBeforeDeferredMigration_ShouldAllowFullExitAndClearPendingRequestState() external {
+        vault.seedUserFundState(VAULT_HASH, user, 10 ether, 10 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 10 ether, 10 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 4 ether);
+
+        vm.prank(owner);
+        vault.setVaultEnd(VAULT_HASH, true);
+        vm.prank(operator);
+        vault.endVault(VAULT_HASH);
+
+        uint256 balanceBefore = collateral.balanceOf(user);
+        vm.prank(user);
+        vault.claimActive(VAULT_HASH);
+        uint256 balanceAfter = collateral.balanceOf(user);
+
+        assertEq(balanceAfter - balanceBefore, 10 ether, "terminal exit should return the full settled position");
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.pendingWithdrawAmount, 0, "terminal exit should clear unprocessed withdraw amount");
+        assertEq(
+            vault.getPendingWithdrawRequests(VAULT_HASH, user).length,
+            0,
+            "terminal exit should remove unprocessed withdraw records"
+        );
+        assertFalse(vault.queued(VAULT_HASH, user), "terminal exit should clear transition queue membership");
+    }
+
+    function testEndVaultDuringDeferredMigration_ShouldPreserveMigratedAndUnmigratedUserFunds() external {
+        vault.seedUserFundState(VAULT_HASH, user, 10 ether, 10 ether, 1e18, 0);
+        vault.seedUserFundState(VAULT_HASH, healthyUser, 20 ether, 20 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 30 ether, 30 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 4 ether);
+        vm.prank(healthyUser);
+        vault.withdraw(VAULT_HASH, 5 ether);
+
+        vm.prank(operator);
+        vault.flushDeferredQueueUsers(VAULT_HASH, 1);
+
+        (,,,, bool canStartNextCycle) = vault.getQueueProgress(VAULT_HASH);
+        assertFalse(canStartNextCycle, "partial migration should keep the next cycle blocked");
+
+        vm.prank(owner);
+        vault.setVaultEnd(VAULT_HASH, true);
+        vm.prank(operator);
+        vault.endVault(VAULT_HASH);
+
+        uint256 userBalanceBefore = collateral.balanceOf(user);
+        vm.prank(user);
+        vault.claimActive(VAULT_HASH);
+        assertEq(collateral.balanceOf(user) - userBalanceBefore, 10 ether, "first user should recover full principal");
+
+        uint256 healthyBalanceBefore = collateral.balanceOf(healthyUser);
+        vm.prank(healthyUser);
+        vault.claimActive(VAULT_HASH);
+        assertEq(
+            collateral.balanceOf(healthyUser) - healthyBalanceBefore,
+            20 ether,
+            "second user should recover full principal"
+        );
+        assertEq(
+            vault.getPendingWithdrawRequests(VAULT_HASH, user).length,
+            0,
+            "migrated user's request should be cleared on terminal exit"
+        );
+        assertEq(
+            vault.getPendingWithdrawRequests(VAULT_HASH, healthyUser).length,
+            0,
+            "unmigrated user's request should be cleared on terminal exit"
+        );
+        assertFalse(vault.queued(VAULT_HASH, user), "migrated user's queue flag should clear on exit");
+        assertFalse(vault.queued(VAULT_HASH, healthyUser), "unmigrated user's queue flag should clear on exit");
     }
 
     function testSystemPauseFunds_ShouldRevertForHealthyUser() external {
