@@ -189,10 +189,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     /// @dev vaultHash → user → whether currently queued
     mapping(bytes32 => mapping(address => bool)) public queued;
-    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
-    mapping(bytes32 => address[]) private _deferredQueueUsers;
-    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
-    mapping(bytes32 => mapping(address => bool)) private _deferredQueued;
+
     /// @dev vaultHash → cycle phase
     mapping(bytes32 => CyclePhase) public vaultPhases;
 
@@ -231,9 +228,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     /// @dev Uniswap V3 swap router for buyback
     address public swapRouter;
-
-    /// @dev Deprecated storage slot kept for UUPS storage layout compatibility.
-    address private __deprecatedMarginPool;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Events
