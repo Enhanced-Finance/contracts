@@ -63,7 +63,8 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         uint256 minPrincipalRatio,
         int256 buybackPriceRatio,
         bool isActive,
-        uint256 currentCycleId
+        uint256 currentCycleId,
+        uint256 protocolFeeRate
     ) external {
         VaultState storage st = vaults[vaultHash];
         st.params.cycleDuration = 1 days;
@@ -75,6 +76,7 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         st.params.strikePriceBps = strikePriceBps;
         st.params.minPrincipalRatio = minPrincipalRatio;
         st.params.buybackPriceRatio = buybackPriceRatio;
+        st.protocolFeeRate = protocolFeeRate;
         st.isActive = isActive;
         st.isPaused = false;
         st.isEnd = false;
@@ -153,7 +155,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         collateral = new MockERC20ForVaultQueue("Collateral", "COL");
         strike = new MockERC20ForVaultQueue("Strike", "USD");
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         collateral.mint(user, 1_000_000 ether);
         collateral.mint(address(vault), 1_000_000 ether);
@@ -180,6 +182,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             fund.initialAmountTotal,
             fund.nextRecordId,
             fund.buybackEnabled,
+            fund.exists,
+            fund.autoBuyEnabled
         ) = vault.userFunds(vaultHash, targetUser);
     }
 
@@ -196,7 +200,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             uint256 currentCycleStart,
             uint256 totalDeposited,
             bool isPaused,
-            bool isEnd
+            bool isEnd,
+            uint256 protocolFeeRate
         ) = vault.vaults(vaultHash);
 
         st = EnhancedVault.VaultState({
@@ -206,12 +211,13 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             currentCycleStart: currentCycleStart,
             totalDeposited: totalDeposited,
             isPaused: isPaused,
-            isEnd: isEnd
+            isEnd: isEnd,
+            protocolFeeRate: protocolFeeRate
         });
     }
 
     function _currentCycleId(bytes32 vaultHash) internal view returns (uint256 currentCycleId) {
-        (,, currentCycleId,,,,) = vault.vaults(vaultHash);
+        (,, currentCycleId,,,,,) = vault.vaults(vaultHash);
     }
 
     function _cycleRecord(bytes32 vaultHash, uint256 cycleId)
@@ -235,11 +241,14 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.nextRecordId, 0);
         assertEq(fund.stoppedPrincipal, 0);
         assertFalse(fund.buybackEnabled);
+        assertFalse(fund.autoBuyEnabled);
     }
 
     function testGetVault_ShouldExposeReservedBuybackParams() external {
         bytes32 customHash = keccak256("reserved-buyback-params");
-        vault.seedVault(customHash, address(collateral), address(strike), 5 ether, 500 ether, 0, 8000, -2000, true, 3);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 5 ether, 500 ether, 0, 8000, -2000, true, 3, 0
+        );
 
         EnhancedVault.VaultState memory st = _vaultState(customHash);
         assertEq(st.params.minPrincipalRatio, 8000);
@@ -248,7 +257,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testDeposit_ShouldCreateRecordIdFromZero_OnFirstDeposit() external {
         bytes32 customHash = keccak256("first-deposit-copy-fields");
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 10 ether);
 
@@ -259,11 +270,15 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testDeposit_ShouldKeepIncrementingRecordIds_AfterFirstDeposit() external {
         bytes32 customHash = keccak256("first-deposit-no-overwrite-fields");
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 10 ether);
 
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 2000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 2000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 20 ether);
 
@@ -531,7 +546,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testPause_ShouldOnlyFreeCapacityOnWithdraw_NotOnQueueProcess() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 100 ether, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 100 ether, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(USER2_PK);
         collateral.mint(user2, 1_000_000 ether);
@@ -1099,7 +1114,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     function testSystemPauseFunds_ShouldInlineSettleUser_AndWithdrawAfterCycleStartShouldConvertToClaimableRecord()
         external
     {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(0xD00D);
         collateral.mint(user2, 1_000_000 ether);
@@ -1113,7 +1128,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         _depositAs(user, VAULT_HASH, 1 ether);
 
@@ -1214,7 +1231,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldConvertWithdrawRequestsBeforePausingRemainingFunds() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(0xD00D);
         collateral.mint(user2, 1_000_000 ether);
@@ -1228,7 +1245,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         _depositAs(user, VAULT_HASH, 1 ether);
 
@@ -1267,7 +1286,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
         vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
 
         vm.prank(user);
@@ -1291,7 +1312,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     function testSystemPauseFunds_ShouldConvertMultipleWithdrawRequestsProRata_WhenSettledActiveIsInsufficient()
         external
     {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 
@@ -1299,7 +1320,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         vm.prank(user);
         vault.withdraw(VAULT_HASH, 40 ether);
@@ -1332,7 +1355,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldUsePendingBuybackCollateralInHealthCheck() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 
@@ -1340,7 +1363,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2, 0);
         vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 40 ether);
         vault.seedMaterializedPremium(VAULT_HASH, user, 20 ether);
         vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(20 ether)));
@@ -1368,7 +1391,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldPauseWhenPendingBuybackCollateralIsInsufficient() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 
@@ -1376,7 +1399,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2, 0);
         vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 35 ether);
         vault.seedMaterializedPremium(VAULT_HASH, user, 10 ether);
         vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(10 ether)));
@@ -1420,7 +1443,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldRevert_WhenUserNotBelowMinPrincipalRatio() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 

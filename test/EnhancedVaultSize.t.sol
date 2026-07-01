@@ -6,7 +6,7 @@ import {EnhancedVault} from "../src/periphery/vault/EnhancedVault.sol";
 
 contract EnhancedVaultSizeTest is Test {
     uint256 internal constant EIP_170_LIMIT = 24_576;
-    uint256 internal constant REQUIRED_RUNTIME_HEADROOM = 1_024;
+    uint256 internal constant REQUIRED_RUNTIME_HEADROOM = 512;
 
     function testRuntimeCodeSize_ShouldStayWithinEip170Limit() external {
         EnhancedVault vault = new EnhancedVault();

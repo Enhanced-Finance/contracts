@@ -10,6 +10,7 @@ import {EnhancedVault} from "../EnhancedVault.sol";
 
 library EnhancedVaultCycleLib {
     uint256 internal constant PRECISION = 1e18;
+    uint256 internal constant PROTOCOL_FEE_RATE_BASE = 10_000_000;
 
     error ExpiryInPast();
     error MustBeCashSettled();
@@ -27,6 +28,7 @@ library EnhancedVaultCycleLib {
         mapping(bytes32 => mapping(uint256 => EnhancedVault.CycleRecord)) storage cycleRecords,
         mapping(bytes32 => mapping(uint256 => uint256)) storage cumCollateral,
         mapping(bytes32 => mapping(uint256 => uint256)) storage cumPremium,
+        mapping(bytes32 => uint256) storage protocolFeeAccrued,
         bytes32 vaultHash,
         uint256 cycleId,
         EnhancedVault.VaultState storage st
@@ -63,12 +65,22 @@ library EnhancedVaultCycleLib {
 
         EnhancedVault.CycleRecord storage rec = cycleRecords[vaultHash][cycleId];
         settled.activeCol = rec.totalActiveCollateral;
-        uint256 cycleCollateralAfterSettle = rec.remainingActiveCollateral + settled.totalReturned;
+        uint256 grossCollateralAfterSettle = rec.remainingActiveCollateral + settled.totalReturned;
 
         if (settled.activeCol > 0) {
-            rec.collateralRatio = cycleCollateralAfterSettle * PRECISION / settled.activeCol;
+            settled.protocolFee = settled.activeCol * st.protocolFeeRate / PROTOCOL_FEE_RATE_BASE;
+            if (settled.protocolFee > grossCollateralAfterSettle) {
+                settled.protocolFee = grossCollateralAfterSettle;
+            }
+            settled.netActiveCollateral = grossCollateralAfterSettle - settled.protocolFee;
+            if (settled.protocolFee > 0) {
+                protocolFeeAccrued[vaultHash] += settled.protocolFee;
+            }
+
+            rec.collateralRatio = settled.netActiveCollateral * PRECISION / settled.activeCol;
             rec.premiumRatio = settled.totalPremium * PRECISION / settled.activeCol;
         } else {
+            settled.netActiveCollateral = 0;
             rec.collateralRatio = PRECISION;
             rec.premiumRatio = 0;
         }
@@ -82,19 +94,16 @@ library EnhancedVaultCycleLib {
     function advanceCycleState(
         mapping(bytes32 => mapping(uint256 => EnhancedVault.CycleRecord)) storage cycleRecords,
         bytes32 vaultHash,
-        uint256 cycleId,
+        uint256,
         uint256 nextId,
         uint256 activeCol,
-        uint256 totalReturned
+        uint256 netActiveCollateral
     ) public returns (uint256 capReduction) {
-        EnhancedVault.CycleRecord storage rec = cycleRecords[vaultHash][cycleId];
-        uint256 cycleCollateralAfterSettle = rec.remainingActiveCollateral + totalReturned;
-
         EnhancedVault.CycleRecord storage nextRec = cycleRecords[vaultHash][nextId];
-        nextRec.totalActiveCollateral = cycleCollateralAfterSettle;
+        nextRec.totalActiveCollateral = netActiveCollateral;
         nextRec.remainingActiveCollateral = nextRec.totalActiveCollateral;
 
-        capReduction = activeCol > cycleCollateralAfterSettle ? activeCol - cycleCollateralAfterSettle : 0;
+        capReduction = activeCol > netActiveCollateral ? activeCol - netActiveCollateral : 0;
     }
 
     function validateOrder(
@@ -108,7 +117,8 @@ library EnhancedVaultCycleLib {
             Parser.Confirmation memory conf,
             /* quoteSig */,
             /* confSig */,
-            /* fee */
+            /* fee1 */,
+            /* fee2 */
         ) = Parser.parseQuoteAndConfirmation(payload);
 
         if (uint256(conf.expiry) < block.timestamp) revert ExpiryInPast();

@@ -12,30 +12,12 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
         assertTrue(vaultHash != bytes32(0), "vault hash should be non-zero");
         assertFalse(defaultVaultParams.isPut, "default vault should be call");
         assertEq(address(vault.enhancedOptions()), address(enhancedOptions), "vault enhanced options mismatch");
-        assertEq(vault.marginPool(), address(marginPool), "vault margin pool should come from enhanced options");
+        assertEq(vault.protocolFeeRecipient(), owner, "vault protocol fee recipient mismatch");
         assertEq(_currentCycleId(vaultHash), 1, "vault current cycle should start at one");
         assertEq(
             oracle.getPrice(address(underlying)),
             SEEDED_UNDERLYING_PRICE,
             "underlying spot price should match seeded value"
-        );
-    }
-
-    function testMarginPool_ShouldFollowEnhancedOptions() external {
-        address newMarginPool = address(0xBEEF);
-
-        vm.prank(owner);
-        enhancedOptions.setMarginPool(newMarginPool);
-
-        assertEq(vault.marginPool(), newMarginPool, "vault should read latest enhanced options margin pool");
-
-        vm.prank(owner);
-        vault.setAssetApprovalMarginPool(address(underlying), true);
-
-        assertEq(
-            underlying.allowance(address(vault), newMarginPool),
-            type(uint256).max,
-            "approval should target latest margin pool"
         );
     }
 
@@ -46,7 +28,7 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
 
         OrderConfig memory orderCfg = _createDefaultOrder(_defaultOrderOverrides());
         bytes memory orderPayload = _buildSignedOrderPayload(orderCfg);
-        assertEq(orderPayload.length, 361);
+        assertEq(orderPayload.length, 377);
     }
 
     function testIntegration_Setup_ShouldCreateVaultFundMakerAndOpenVault() external {
@@ -145,7 +127,7 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
     }
 
     function testIntegration_SystemPauseThenBuyback_UserReactivates() external {
-        _configureMinPrincipalRatioVault(9_500);
+        _configureMinPrincipalRatioVault(9_800);
         _activateUserPosition(user, 10 ether);
         _depositAs(user, 1 ether);
         _finishCycleAtPrice(3_000e8);
@@ -163,6 +145,11 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
             vault.getPendingWithdraws(vaultHash, user).length, 0, "system pause should not create a withdraw record"
         );
 
+        _processCurrentSettledQueue(users.length);
+
+        vm.prank(operator);
+        vault.startNextCycle(vaultHash);
+
         vm.prank(user);
         vault.withdraw(vaultHash, pausedFund.systemPausedPrincipal);
 
@@ -173,11 +160,6 @@ contract EnhancedVaultIntegrationTest is EnhancedVaultIntegrationBase {
             pausedFund.systemPausedPrincipal,
             "claimable record should match withdrawn system-paused principal"
         );
-
-        _processCurrentSettledQueue(users.length);
-
-        vm.prank(operator);
-        vault.startNextCycle(vaultHash);
 
         vm.prank(user);
         vault.setBuybackEnabled(vaultHash, true);

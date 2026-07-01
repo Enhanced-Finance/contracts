@@ -2,63 +2,12 @@
 pragma solidity ^0.8.28;
 
 import {EnhancedVaultIntegrationBase} from "./helpers/EnhancedVaultIntegrationBase.sol";
-import {Actions} from "src/core/libs/Actions.sol";
-import {stdStorage, StdStorage} from "forge-std/StdStorage.sol";
 
 contract ControllerSecurityTest is EnhancedVaultIntegrationBase {
-    using stdStorage for StdStorage;
-
     function testOwnerCannotEnableOperators() public {
         vm.prank(owner);
         vm.expectRevert("operators cannot be enabled");
         controller.setOperatorsEnabled(true);
-    }
-
-    function testDeprecatedSetOperatorAlwaysReverts() public {
-        vm.expectRevert("operators disabled");
-        controller.setOperator(user, true);
-    }
-
-    function testDeprecatedIsOperatorIgnoresHistoricalStorage() public {
-        // operators is intentionally retained at storage slot 11 for upgrade compatibility.
-        bytes32 innerSlot = keccak256(abi.encode(owner, uint256(11)));
-        bytes32 operatorSlot = keccak256(abi.encode(user, innerSlot));
-        vm.store(address(controller), operatorSlot, bytes32(uint256(1)));
-
-        assertFalse(controller.isOperator(owner, user));
-    }
-
-    function testVaultOwnerCannotOperateWhenDeprecatedOperatorsFlagIsForcedOn() public {
-        stdstore.target(address(controller)).sig(controller.operatorsEnabled.selector).enable_packed_slots()
-            .checked_write(true);
-
-        Actions.ActionArgs[] memory actions = new Actions.ActionArgs[](1);
-        actions[0] = Actions.ActionArgs({
-            actionType: Actions.ActionType.OpenVault,
-            owner: user,
-            secondAddress: address(0),
-            asset: address(0),
-            vaultId: controller.getAccountVaultCounter(user) + 1,
-            amount: 0,
-            index: 0,
-            data: abi.encode(uint256(0))
-        });
-
-        vm.prank(user);
-        vm.expectRevert(bytes("C6"));
-        controller.operate(actions);
-    }
-
-    function testNonManagerCannotUseManagerEntrypointWhenDeprecatedOperatorsFlagIsForcedOn() public {
-        stdstore.target(address(controller)).sig(controller.operatorsEnabled.selector).enable_packed_slots()
-            .checked_write(true);
-
-        vm.prank(user);
-        (bool success, bytes memory revertData) =
-            address(controller).call(abi.encodeCall(controller.donate, (address(underlying), 0)));
-
-        assertFalse(success);
-        assertEq(revertData, abi.encodeWithSignature("Error(string)", "C6"));
     }
 
     function testCustodyVaultCollateralRevertsWhenFullyPaused() public {

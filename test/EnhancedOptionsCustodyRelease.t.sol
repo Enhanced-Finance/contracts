@@ -5,19 +5,17 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
+import {IEnhancedOptionsTimelock} from "src/core/interfaces/IEnhancedOptionsTimelock.sol";
 import {MMarket} from "src/core/MMarket.sol";
 import {MockERC20} from "src/core/mocks/MockERC20.sol";
 import {Actions} from "src/core/libs/Actions.sol";
 import {MMarketOperations} from "src/core/libs/MMarketOperations.sol";
 import {MarginVault} from "src/core/libs/MarginVault.sol";
+import {EnhancedOptionsTimelockLib} from "src/core/libs/EnhancedOptionsTimelockLib.sol";
 
 contract EnhancedOptionsCustodyHarness is EnhancedOptions {
     function trackedReleaseVaultCount(address owner) external view returns (uint256) {
         return vaultsWithOutstandingRelease[owner].length;
-    }
-
-    function trackedReleaseVaultId(address owner, uint256 index) external view returns (uint256) {
-        return vaultsWithOutstandingRelease[owner][index];
     }
 
     function isTrackedReleaseVault(address owner, uint256 vaultId) external view returns (bool) {
@@ -141,6 +139,9 @@ contract EnhancedOptionsCustodyOtokenMock {
 }
 
 contract EnhancedOptionsCustodyReleaseTest is Test {
+    address internal constant ENHANCED_OPTIONS_TIMELOCK_LIBRARY_PLACEHOLDER =
+        0xeF3cD61FDc9a41e32F6100FBef544bAB712dec9e;
+
     uint256 internal constant OWNER_PK = 0xA11CE;
     uint256 internal constant OPERATOR_PK = 0xB0B;
     uint256 internal constant MAKER_PK = 0xE11E;
@@ -157,6 +158,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
 
     address internal owner;
     address internal operator;
+    address internal custodyOperator;
     address internal maker;
     address internal receiver = address(0xBEEF);
     address internal returner = address(0xDAD);
@@ -169,8 +171,10 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
     MockERC20 internal otoken;
 
     function setUp() external {
+        vm.etch(ENHANCED_OPTIONS_TIMELOCK_LIBRARY_PLACEHOLDER, type(EnhancedOptionsTimelockLib).runtimeCode);
         owner = vm.addr(OWNER_PK);
         operator = vm.addr(OPERATOR_PK);
+        custodyOperator = address(0xC0570D1);
         maker = vm.addr(MAKER_PK);
 
         enhancedOptions = new EnhancedOptionsCustodyHarness();
@@ -185,19 +189,19 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         _unlockInitializers(address(mmarket));
 
         vm.startPrank(owner);
-        enhancedOptions.initialize();
+        enhancedOptions.initialize(new address[](0), new address[](0), operator, custodyOperator);
         mmarket.initialize();
-        enhancedOptions.setOperator(operator);
+        // enhancedOptions.setOperator(operator);
         enhancedOptions.setController(address(controller));
         enhancedOptions.setMMarket(address(mmarket));
         enhancedOptions.setMarginPool(address(controller));
         mmarket.setOperator(address(enhancedOptions));
+        _setMakerWhitelist(maker, maker);
         vm.stopPrank();
     }
 
     function test_ownerCanSetMakerCustodyLimitBps() external {
-        vm.prank(owner);
-        enhancedOptions.setMakerCustodyLimitBps(maker, receiver, 7000);
+        _setMakerCustodyLimitBps(maker, receiver, 7000);
 
         assertEq(enhancedOptions.makerCustodyLimitBps(maker, receiver), 7000);
 
@@ -207,7 +211,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         assertEq(enhancedOptions.makerCustodyLimitBps(maker, receiver), 0);
     }
 
-    function test_operatorCanBatchReleaseCollateralWithMakerSignature() external {
+    function test_custodyOperatorCanBatchReleaseCollateralWithMakerSignature() external {
         _setMakerCustodyLimitBps(maker, receiver, 10000);
         _setVaultCollateral(maker, 1, address(underlying), 1 ether);
         _setVaultCollateral(maker, 2, address(underlying), 2 ether);
@@ -216,7 +220,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         EnhancedOptions.CustodyReleaseRequest[] memory requests = _custodyReleaseRequests();
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
         );
@@ -231,6 +235,64 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         assertEq(outstandingAmount, 1 ether);
     }
 
+    function test_releaseRejectsMainOperator() external {
+        _setMakerCustodyLimitBps(maker, receiver, 10000);
+        _setVaultCollateral(maker, 1, address(underlying), 1 ether);
+        underlying.mint(address(controller), 1 ether);
+
+        EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
+        bytes memory sig = _signCustodyRelease(maker, receiver, 11, uint64(block.timestamp + 1 days), requests);
+
+        vm.prank(operator);
+        vm.expectRevert(EnhancedOptions.BadCustodyOperator.selector);
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 11, uint64(block.timestamp + 1 days), requests, sig
+        );
+    }
+
+    function test_ownerCanSetCustodyOperator() external {
+        address newCustodyOperator = address(0xC0570D2);
+
+        vm.expectEmit(false, false, false, true);
+        emit EnhancedOptions.CustodyOperatorChanged(newCustodyOperator, custodyOperator);
+        vm.prank(owner);
+        enhancedOptions.setCustodyOperator(newCustodyOperator);
+
+        assertEq(enhancedOptions.custodyOperator(), newCustodyOperator);
+    }
+
+    function test_setCustodyOperatorRejectsZeroAndNonOwner() external {
+        vm.prank(owner);
+        vm.expectRevert(IEnhancedOptionsTimelock.ZeroAddress.selector);
+        enhancedOptions.setCustodyOperator(address(0));
+
+        vm.prank(operator);
+        vm.expectRevert();
+        enhancedOptions.setCustodyOperator(address(0xC0570D3));
+    }
+
+    function test_releaseRejectsMakerWithoutWhitelistReceiver() external {
+        _clearMakerWhitelist(maker);
+        _setMakerCustodyLimitBps(maker, receiver, 10000);
+        _setVaultCollateral(maker, 1, address(underlying), 1 ether);
+        underlying.mint(address(controller), 1 ether);
+
+        EnhancedOptions.CustodyReleaseRequest[] memory requests = new EnhancedOptions.CustodyReleaseRequest[](1);
+        requests[0] = EnhancedOptions.CustodyReleaseRequest({
+            owner: maker, vaultId: 1, asset: address(underlying), amount: 1 ether
+        });
+        bytes memory sig = _signCustodyRelease(maker, receiver, 9, uint64(block.timestamp + 1 days), requests);
+
+        vm.prank(custodyOperator);
+        vm.expectRevert(abi.encodeWithSignature("MakerWhitelistRequired(address)", maker));
+        enhancedOptions.ingressoReleaseCollateralToCustody(
+            maker, receiver, 9, uint64(block.timestamp + 1 days), requests, sig
+        );
+    }
+
     function test_releaseAllowsTakerOwnedVaultWhenMakerMatchesVaultMaker() external {
         address vaultOwner = address(0xCAFE);
         _setMakerCustodyLimitBps(maker, receiver, 10000);
@@ -243,7 +305,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 8, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 8, uint64(block.timestamp + 1 days), requests, sig
         );
@@ -257,7 +319,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         EnhancedOptions.CustodyReleaseRequest[] memory requests = _custodyReleaseRequests();
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.CustodianNotAuthorized.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
@@ -275,7 +337,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 2, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.ExceedsVaultDeposit.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 2, uint64(block.timestamp + 1 days), requests, sig
@@ -293,7 +355,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 3, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.ExceedsMakerCustodyLimit.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 3, uint64(block.timestamp + 1 days), requests, sig
@@ -311,7 +373,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 4, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 4, uint64(block.timestamp + 1 days), requests, sig
         );
@@ -333,7 +395,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 5, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.MakerNotVaultMaker.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 5, uint64(block.timestamp + 1 days), requests, sig
@@ -351,7 +413,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 7, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.SystemFullyPaused.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 7, uint64(block.timestamp + 1 days), requests, sig
@@ -371,7 +433,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         });
         bytes memory sig = _signCustodyRelease(maker, receiver, 6, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         vm.expectRevert(EnhancedOptions.CannotReleaseFromExpiredVault.selector);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 6, uint64(block.timestamp + 1 days), requests, sig
@@ -435,6 +497,45 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         assertEq(uint256(controller.lastActionType()), uint256(Actions.ActionType.Redeem));
     }
 
+    function test_redeemRequiresMakerAsPayer() external {
+        _seedMMarketOtokenBalance();
+
+        (MMarketOperations.Operation[] memory operations, Actions.ActionArgs[] memory actions) = _redeemArgs();
+        actions[0].owner = address(0);
+
+        vm.prank(operator);
+        vm.expectRevert(EnhancedOptions.RedeemPayerInvalid.selector);
+        enhancedOptions.ingressoRedeem(operations, actions);
+    }
+
+    function test_redeemUsesMakerAsPayerAndWhitelistedReceiver() external {
+        address redeemReceiver = address(0xCAFE);
+        vm.startPrank(owner);
+        _setMakerWhitelist(maker, redeemReceiver);
+        vm.stopPrank();
+        _seedMMarketOtokenBalance();
+
+        (MMarketOperations.Operation[] memory operations, Actions.ActionArgs[] memory actions) = _redeemArgs();
+        actions[0].secondAddress = redeemReceiver;
+
+        vm.prank(operator);
+        enhancedOptions.ingressoRedeem(operations, actions);
+
+        assertEq(controller.lastOwner(), maker);
+        assertEq(controller.lastSecondAddress(), redeemReceiver);
+    }
+
+    function test_redeemRejectsMakerWithoutWhitelistReceiver() external {
+        _clearMakerWhitelist(maker);
+        _seedMMarketOtokenBalance();
+
+        (MMarketOperations.Operation[] memory operations, Actions.ActionArgs[] memory actions) = _redeemArgs();
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSignature("MakerWhitelistRequired(address)", maker));
+        enhancedOptions.ingressoRedeem(operations, actions);
+    }
+
     function _releaseOnce() internal {
         _setMakerCustodyLimitBps(maker, receiver, 10000);
         _setVaultCollateral(maker, 1, address(underlying), 1 ether);
@@ -444,7 +545,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         EnhancedOptions.CustodyReleaseRequest[] memory requests = _custodyReleaseRequests();
         bytes memory sig = _signCustodyRelease(maker, receiver, 1, uint64(block.timestamp + 1 days), requests);
 
-        vm.prank(operator);
+        vm.prank(custodyOperator);
         enhancedOptions.ingressoReleaseCollateralToCustody(
             maker, receiver, 1, uint64(block.timestamp + 1 days), requests, sig
         );
@@ -517,7 +618,7 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
         actions = new Actions.ActionArgs[](1);
         actions[0] = Actions.ActionArgs({
             actionType: Actions.ActionType.Redeem,
-            owner: address(0),
+            owner: maker,
             secondAddress: maker,
             asset: address(otoken),
             vaultId: 0,
@@ -528,8 +629,34 @@ contract EnhancedOptionsCustodyReleaseTest is Test {
     }
 
     function _setMakerCustodyLimitBps(address targetMaker, address targetReceiver, uint256 bps) internal {
-        vm.prank(owner);
-        enhancedOptions.setMakerCustodyLimitBps(targetMaker, targetReceiver, bps);
+        vm.startPrank(owner);
+        bytes memory key = abi.encode(targetMaker, targetReceiver);
+        enhancedOptions.scheduleConfigUpdate(
+            IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps,
+            abi.encode(targetMaker, targetReceiver, bps)
+        );
+        (, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key);
+        vm.warp(executeAfter);
+        enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key);
+        vm.stopPrank();
+    }
+
+    function _setMakerWhitelist(address targetMaker, address targetReceiver) internal {
+        bytes memory key = abi.encode(targetMaker);
+        enhancedOptions.scheduleConfigUpdate(
+            IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, abi.encode(targetMaker, targetReceiver)
+        );
+        (, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+        vm.warp(executeAfter);
+        enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+    }
+
+    function _clearMakerWhitelist(address targetMaker) internal {
+        vm.startPrank(owner);
+        _setMakerWhitelist(targetMaker, address(0));
+        vm.stopPrank();
     }
 
     function _setVaultCollateral(address vaultOwner, uint256 vaultId, address asset, uint256 amount) internal {

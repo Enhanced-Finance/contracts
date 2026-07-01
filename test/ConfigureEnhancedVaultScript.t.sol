@@ -3,11 +3,14 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ConfigureEnhancedVault, IEnhancedVaultConfigTarget} from "../script/EnhancedVault/ConfigureEnhancedVault.s.sol";
+import {stdJson} from "forge-std/StdJson.sol";
 
 contract MockEnhancedVaultConfigTarget is IEnhancedVaultConfigTarget {
     address public operator;
     address public vaultSigner;
+    address public protocolFeeRecipient;
     address public swapRouter;
+    uint256 public protocolFeeRecipientSetCallCount;
 
     address[] internal _marginPoolAssets;
     bool[] internal _marginPoolApprovals;
@@ -20,6 +23,11 @@ contract MockEnhancedVaultConfigTarget is IEnhancedVaultConfigTarget {
 
     function setVaultSigner(address newSigner) external {
         vaultSigner = newSigner;
+    }
+
+    function setProtocolFeeRecipient(address newRecipient) external {
+        protocolFeeRecipient = newRecipient;
+        protocolFeeRecipientSetCallCount++;
     }
 
     function setSwapRouter(address newSwapRouter) external {
@@ -73,9 +81,15 @@ contract ConfigureEnhancedVaultHarness is ConfigureEnhancedVault {
     {
         _applySwapRouterApprovals(vault, approvals);
     }
+
+    function exposedApplyProtocolFeeRecipient(IEnhancedVaultConfigTarget vault, address desiredRecipient) external {
+        _applyProtocolFeeRecipient(vault, desiredRecipient);
+    }
 }
 
 contract ConfigureEnhancedVaultScriptTest is Test {
+    using stdJson for string;
+
     ConfigureEnhancedVaultHarness internal harness;
     MockEnhancedVaultConfigTarget internal target;
 
@@ -113,6 +127,12 @@ contract ConfigureEnhancedVaultScriptTest is Test {
     function testReadApprovals_ShouldDecodeRealConfigFile() external view {
         string memory configPath = string.concat(vm.projectRoot(), "/config/1328.json");
         string memory configJson = vm.readFile(configPath);
+
+        assertEq(
+            configJson.readAddress(".EnhancedVault.protocolFeeRecipient"),
+            0x591e577E688f0Ec1F93B9Cc6E31D16472807aE8d,
+            "real config protocol fee recipient mismatch"
+        );
 
         ConfigureEnhancedVault.ApprovalConfig[] memory marginPoolApprovals =
             harness.exposedReadApprovals(configJson, ".EnhancedVault.marginPoolApprovals");
@@ -174,5 +194,16 @@ contract ConfigureEnhancedVaultScriptTest is Test {
         (address secondAsset, bool secondApproval) = target.swapRouterCall(1);
         assertEq(secondAsset, address(0xBB), "second swapRouter approval asset mismatch");
         assertFalse(secondApproval, "second swapRouter approval flag mismatch");
+    }
+
+    function testApplyProtocolFeeRecipient_ShouldUpdateOnlyWhenDifferentAndNonZero() external {
+        address desiredRecipient = address(0x1234);
+
+        harness.exposedApplyProtocolFeeRecipient(target, desiredRecipient);
+        harness.exposedApplyProtocolFeeRecipient(target, desiredRecipient);
+        harness.exposedApplyProtocolFeeRecipient(target, address(0));
+
+        assertEq(target.protocolFeeRecipient(), desiredRecipient, "protocol fee recipient mismatch");
+        assertEq(target.protocolFeeRecipientSetCallCount(), 1, "protocol fee recipient should update once");
     }
 }

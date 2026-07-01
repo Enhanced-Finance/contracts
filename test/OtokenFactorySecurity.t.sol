@@ -26,7 +26,7 @@ contract OtokenFactorySecurityTest is EnhancedVaultIntegrationBase {
         );
     }
 
-    function testCreatesDistinctOtokensForDifferentVaultOwners() public {
+    function testCreatesDistinctPhysicalOtokensForDifferentVaults() public {
         uint256 expiry = block.timestamp + 7 days;
 
         address firstOtoken = factory.createOtoken(
@@ -36,7 +36,7 @@ contract OtokenFactorySecurityTest is EnhancedVaultIntegrationBase {
             address(underlying), address(strike), address(underlying), 1_000e8, expiry, false, true, maker
         );
 
-        assertTrue(firstOtoken != secondOtoken, "distinct vault owners should not share otoken");
+        assertTrue(firstOtoken != secondOtoken, "distinct vaults should not share otoken");
         assertEq(OtokenInterface(firstOtoken).vaultOwner(), user, "first vault owner");
         assertEq(OtokenInterface(secondOtoken).vaultOwner(), maker, "second vault owner");
         assertEq(
@@ -44,14 +44,27 @@ contract OtokenFactorySecurityTest is EnhancedVaultIntegrationBase {
                 address(underlying), address(strike), address(underlying), 1_000e8, expiry, false, true, user
             ),
             firstOtoken,
-            "first vault owner lookup"
+            "first vault lookup"
         );
         assertEq(
             factory.getOtoken(
                 address(underlying), address(strike), address(underlying), 1_000e8, expiry, false, true, maker
             ),
             secondOtoken,
-            "second vault owner lookup"
+            "second vault lookup"
+        );
+    }
+
+    function testRevertsWhenSameOwnerCreatesDuplicateOtoken() public {
+        uint256 expiry = block.timestamp + 7 days;
+
+        factory.createOtoken(
+            address(underlying), address(strike), address(underlying), 1_000e8, expiry, false, true, user
+        );
+
+        vm.expectRevert("OtokenFactory: Option already created");
+        factory.createOtoken(
+            address(underlying), address(strike), address(underlying), 1_000e8, expiry, false, true, user
         );
     }
 }

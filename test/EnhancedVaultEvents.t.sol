@@ -30,7 +30,7 @@ contract EnhancedVaultEventHarness is EnhancedVault {
 
 contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
     bytes32 internal constant VAULT_CREATED_EVENT = keccak256(
-        "VaultCreated(bytes32,uint256,address,address,address,bool,uint256,uint256,uint256,int256,uint256,int256)"
+        "VaultCreated(bytes32,uint256,address,address,address,bool,uint256,uint256,uint256,int256,uint256,int256,uint256)"
     );
     bytes32 internal constant DEPOSITED_EVENT = keccak256("Deposited(bytes32,address,uint256,uint256)");
     bytes32 internal constant WITHDRAW_REQUESTED_EVENT =
@@ -75,7 +75,8 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
             uint256 currentCycleStart,
             uint256 totalDeposited,
             bool isPaused,
-            bool isEnd
+            bool isEnd,
+            uint256 protocolFeeRate
         ) = vault.vaults(vaultHash);
 
         st = EnhancedVault.VaultState({
@@ -85,17 +86,19 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
             currentCycleStart: currentCycleStart,
             totalDeposited: totalDeposited,
             isPaused: isPaused,
-            isEnd: isEnd
+            isEnd: isEnd,
+            protocolFeeRate: protocolFeeRate
         });
     }
 
     function testCreateVault_ShouldEmitFullParamsAndInitialState() external {
         EnhancedVault.VaultParams memory params = _vaultParams();
-        bytes32 expectedHash = keccak256(abi.encode(params));
+        uint256 expectedProtocolFeeRate = 10_000;
+        bytes32 expectedHash = keccak256(abi.encode(params, expectedProtocolFeeRate));
 
         vm.recordLogs();
         vm.prank(owner);
-        bytes32 vaultHash = vault.createVault(params);
+        bytes32 vaultHash = vault.createVault(params, expectedProtocolFeeRate);
 
         assertEq(vaultHash, expectedHash, "vault hash mismatch");
 
@@ -115,9 +118,11 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
             uint256 startTime,
             int256 strikePriceBps,
             uint256 minPrincipalRatio,
-            int256 buybackPriceRatio
+            int256 buybackPriceRatio,
+            uint256 decodedProtocolFeeRate
         ) = abi.decode(
-            log.data, (uint256, address, address, address, bool, uint256, uint256, uint256, int256, uint256, int256)
+            log.data,
+            (uint256, address, address, address, bool, uint256, uint256, uint256, int256, uint256, int256, uint256)
         );
 
         assertEq(cycleDuration, params.cycleDuration, "cycleDuration mismatch");
@@ -131,6 +136,7 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
         assertEq(strikePriceBps, params.strikePriceBps, "strikePriceBps mismatch");
         assertEq(minPrincipalRatio, params.minPrincipalRatio, "minPrincipalRatio mismatch");
         assertEq(buybackPriceRatio, params.buybackPriceRatio, "buybackPriceRatio mismatch");
+        assertEq(decodedProtocolFeeRate, expectedProtocolFeeRate, "protocolFeeRate mismatch");
 
         EnhancedVault.VaultState memory st = _vaultState(vaultHash);
         assertTrue(st.isActive, "vault should start active");
@@ -139,6 +145,7 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
         assertEq(st.totalDeposited, 0, "totalDeposited mismatch");
         assertFalse(st.isPaused, "vault should not start paused");
         assertFalse(st.isEnd, "vault should not start ended");
+        assertEq(st.protocolFeeRate, expectedProtocolFeeRate, "protocolFeeRate should be stored in state");
     }
 
     function testDeposit_ShouldEmitRecordId() external {
@@ -222,6 +229,35 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
         assertEq(cycleEnd, st.currentCycleStart + st.params.cycleDuration, "CycleStarted end mismatch");
     }
 
+    function testCreateVaultProtocolFeeRate_ShouldApplyDuringSettlement() external {
+        EnhancedVault.VaultParams memory params = _vaultParams();
+        uint256 protocolFeeRate = 100_000;
+
+        vm.prank(owner);
+        bytes32 vaultHash = vault.createVault(params, protocolFeeRate);
+
+        vm.prank(user);
+        vault.deposit(vaultHash, 100 ether);
+
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(operator);
+        vault.nextCycle(vaultHash);
+
+        EnhancedVault.VaultState memory activeCycle = _vaultState(vaultHash);
+        vm.warp(activeCycle.currentCycleStart + activeCycle.params.cycleDuration + 1);
+        vm.prank(operator);
+        vault.nextCycle(vaultHash);
+
+        EnhancedVault.CycleRecord memory settled = _cycleRecord(vaultHash, 2);
+        EnhancedVault.CycleRecord memory nextRec = _cycleRecord(vaultHash, 3);
+
+        assertEq(vault.protocolFeeAccrued(vaultHash), 1 ether, "createVault fee rate should accrue protocol fee");
+        assertEq(settled.collateralRatio, 99e16, "createVault fee rate should reduce collateral ratio");
+        assertEq(nextRec.totalActiveCollateral, 99 ether, "next cycle should use net collateral after fee");
+        assertEq(nextRec.remainingActiveCollateral, 99 ether, "next remaining should use net collateral after fee");
+        assertEq(_vaultState(vaultHash).totalDeposited, 99 ether, "TVL should be reduced by protocol fee");
+    }
+
     function testCreateVaultHash_ShouldChangeWhenStrikePriceBpsChanges() external {
         EnhancedVault.VaultParams memory lowBps = _vaultParams();
         EnhancedVault.VaultParams memory highBps = _vaultParams();
@@ -232,13 +268,23 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
         );
     }
 
+    function testCreateVaultHash_ShouldChangeWhenProtocolFeeRateChanges() external {
+        EnhancedVault.VaultParams memory params = _vaultParams();
+
+        assertNotEq(
+            keccak256(abi.encode(params, 0)),
+            keccak256(abi.encode(params, 100_000)),
+            "vault hash should include protocolFeeRate"
+        );
+    }
+
     function testCreateVault_ShouldRevertWhenStrikePriceBpsIsOutOfRange() external {
         EnhancedVault.VaultParams memory params = _vaultParams();
         params.strikePriceBps = 10_001;
 
         vm.prank(owner);
         vm.expectRevert();
-        vault.createVault(params);
+        vault.createVault(params, 0);
     }
 
     function testCreateVault_ShouldRevertWhenBuybackPriceRatioIsOutOfRange() external {
@@ -247,13 +293,44 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
 
         vm.prank(owner);
         vm.expectRevert();
-        vault.createVault(params);
+        vault.createVault(params, 0);
+    }
+
+    function testCreateVault_ShouldRevertWhenProtocolFeeRateIsOutOfRange() external {
+        EnhancedVault.VaultParams memory params = _vaultParams();
+
+        vm.prank(owner);
+        vm.expectRevert();
+        vault.createVault(params, 10_000_001);
+    }
+
+    function testCreateVault_ShouldAcceptMaximumProtocolFeeRate() external {
+        EnhancedVault.VaultParams memory params = _vaultParams();
+
+        vm.prank(owner);
+        bytes32 vaultHash = vault.createVault(params, 10_000_000);
+
+        assertEq(_vaultState(vaultHash).protocolFeeRate, 10_000_000, "maximum protocol fee rate should be accepted");
     }
 
     function _createVault() internal returns (bytes32 vaultHash) {
         EnhancedVault.VaultParams memory params = _vaultParams();
         vm.prank(owner);
-        vaultHash = vault.createVault(params);
+        vaultHash = vault.createVault(params, 0);
+    }
+
+    function _cycleRecord(bytes32 vaultHash, uint256 cycleId)
+        internal
+        view
+        returns (EnhancedVault.CycleRecord memory rec)
+    {
+        (
+            rec.totalActiveCollateral,
+            rec.remainingActiveCollateral,
+            rec.totalPremium,
+            rec.collateralRatio,
+            rec.premiumRatio
+        ) = vault.cycleRecords(vaultHash, cycleId);
     }
 
     function _vaultParams() internal view returns (EnhancedVault.VaultParams memory params) {

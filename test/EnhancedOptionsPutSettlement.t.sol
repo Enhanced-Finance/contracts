@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Actions} from "src/core/libs/Actions.sol";
 import {MMarketOperations} from "src/core/libs/MMarketOperations.sol";
+import {IEnhancedOptionsTimelock} from "src/core/interfaces/IEnhancedOptionsTimelock.sol";
 import {EnhancedVaultIntegrationBase, EnhancedVaultFixtureERC20} from "./helpers/EnhancedVaultIntegrationBase.sol";
 
 contract EnhancedOptionsPutSettlementTest is EnhancedVaultIntegrationBase {
@@ -50,8 +51,13 @@ contract EnhancedOptionsPutSettlementTest is EnhancedVaultIntegrationBase {
         whitelist.whitelistCollateral(address(strike));
         whitelist.whitelistCoveredCollateral(address(strike), address(underlying), true);
         whitelist.whitelistProduct(address(underlying), address(strike), address(strike), true);
-        enhancedOptions.setTrustedTaker(user, true);
         vm.stopPrank();
+
+        vm.prank(owner);
+        enhancedOptions.scheduleConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedTaker, abi.encode(user));
+        vm.warp(block.timestamp + 48 hours);
+        vm.prank(owner);
+        enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedTaker, abi.encode(user));
 
         vm.prank(user);
         strike.approve(address(marginPool), type(uint256).max);
@@ -107,7 +113,7 @@ contract EnhancedOptionsPutSettlementTest is EnhancedVaultIntegrationBase {
         Actions.ActionArgs[] memory actions = new Actions.ActionArgs[](1);
         actions[0] = Actions.ActionArgs({
             actionType: Actions.ActionType.Redeem,
-            owner: address(0),
+            owner: maker,
             secondAddress: maker,
             asset: otoken,
             vaultId: 0,
