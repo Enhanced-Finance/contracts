@@ -23,11 +23,12 @@ contract CreateVault is Script {
     address VAULT_STRIKE_ASSET = vm.envAddress("STRIKE");
     bool constant VAULT_IS_PUT = false; // true = put, false = call
     uint256 constant VAULT_CAPACITY = 1_000_000e18;
-    uint256 constant VAULT_MIN_INVESTMENT = 1e16;
-    uint256 constant VAULT_START_TIME = 1773280800; // > 0
+    uint256 constant VAULT_MIN_INVESTMENT = 1e17;
+    uint256 constant VAULT_START_TIME = 1782432000; // > 0
     int256 constant VAULT_STRIKE_PRICE_BPS = 500; // precision: 10000 (e.g. 500 = +5%, -500 = -5%)
     uint256 constant VAULT_MIN_PRINCIPAL_RATIO = 9000; // precision: 10000 (e.g. 8000 = 80%)
     int256 constant VAULT_BUYBACK_PRICE_RATIO = -100; // precision: 10000 (can be negative)
+    uint256 constant VAULT_PROTOCOL_FEE_RATE = 1923; // precision: 10000000 (1923 = 0.01923%, 100000 = 1%)
     // --------------------------------------------------------------
 
     function run() public {
@@ -67,9 +68,10 @@ contract CreateVault is Script {
         console.log("  strikePriceBps:", params.strikePriceBps);
         console.log("  minPrincipalRatio:", params.minPrincipalRatio);
         console.logInt(params.buybackPriceRatio);
+        console.log("  protocolFeeRate:", VAULT_PROTOCOL_FEE_RATE);
 
         vm.startBroadcast(deployerPrivateKey);
-        bytes32 vaultHash = EnhancedVault(vaultAddr).createVault(params);
+        bytes32 vaultHash = EnhancedVault(vaultAddr).createVault(params, VAULT_PROTOCOL_FEE_RATE);
         vm.stopBroadcast();
 
         console.log("Vault created. Hash:", vm.toString(vaultHash));

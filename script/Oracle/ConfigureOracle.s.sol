@@ -14,16 +14,16 @@ contract ConfigureOracle is Script {
         string memory chainIdStr = vm.toString(chainId);
         string memory deployPath = string.concat(vm.projectRoot(), "/.deploy/", chainIdStr, ".json");
         string memory configPath = string.concat(vm.projectRoot(), "/config/", chainIdStr, ".json");
-        
+
         require(vm.isFile(deployPath), "Deploy file not found");
         require(vm.isFile(configPath), "Config file not found");
-        
+
         string memory deployJson = vm.readFile(deployPath);
         string memory configJson = vm.readFile(configPath);
 
         address oracleAddr = deployJson.readAddress(".Oracle.proxyAddress");
         require(oracleAddr != address(0), "Oracle proxy not found");
-        
+
         Oracle oracle = Oracle(oracleAddr);
         console.log("Configuring Oracle at:", oracleAddr);
 

@@ -38,11 +38,7 @@ contract UpgradeWhitelist is Script {
             deployPath,
             ".Whitelist.implementationAddress"
         );
-        vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".Whitelist.verifyImplementationCommand"
-        );
+        vm.writeJson(string.concat("\"", verifyImplCmd, "\""), deployPath, ".Whitelist.verifyImplementationCommand");
 
         console.log("Whitelist upgraded:", proxyAddr);
         console.log("New implementation:", address(newImplementation));

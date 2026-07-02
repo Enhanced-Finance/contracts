@@ -38,11 +38,7 @@ contract UpgradeController is Script {
             deployPath,
             ".Controller.implementationAddress"
         );
-        vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".Controller.verifyImplementationCommand"
-        );
+        vm.writeJson(string.concat("\"", verifyImplCmd, "\""), deployPath, ".Controller.verifyImplementationCommand");
 
         console.log("Controller upgraded:", proxyAddr);
         console.log("New implementation:", address(newImplementation));

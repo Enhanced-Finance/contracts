@@ -15,10 +15,12 @@ import {stdJson} from "forge-std/StdJson.sol";
  *   VAULT_ENHANCED_OPTIONS     address of EnhancedOptions proxy (or read from .deploy)
  *   VAULT_OPERATOR             fallback address of the initial operator
  *   VAULT_SIGNER               fallback address of the vault signer (off-chain quote signer)
+ *   VAULT_PROTOCOL_FEE_RECIPIENT fallback address of the protocol fee recipient
  *
- * Operator/signer are read from config/<chainId>.json first:
+ * Operator/signer/protocol fee recipient are read from config/<chainId>.json first:
  *   .EnhancedVault.operator
  *   .EnhancedVault.vaultSigner
+ *   .EnhancedVault.protocolFeeRecipient
  * Env vars are only used as fallback.
  */
 contract DeployEnhancedVaultProxy is Script {
@@ -67,17 +69,27 @@ contract DeployEnhancedVaultProxy is Script {
         } else if (vm.envOr("VAULT_SIGNER", address(0)) != address(0)) {
             vaultSigner = vm.envAddress("VAULT_SIGNER");
         }
+
+        address protocolFeeRecipient;
+        if (vm.keyExists(configJson, ".EnhancedVault.protocolFeeRecipient")) {
+            protocolFeeRecipient = configJson.readAddress(".EnhancedVault.protocolFeeRecipient");
+        } else if (vm.envOr("VAULT_PROTOCOL_FEE_RECIPIENT", address(0)) != address(0)) {
+            protocolFeeRecipient = vm.envAddress("VAULT_PROTOCOL_FEE_RECIPIENT");
+        }
         require(operator != address(0), "VAULT_OPERATOR not set");
         require(vaultSigner != address(0), "VAULT_SIGNER not set");
+        require(protocolFeeRecipient != address(0), "VAULT_PROTOCOL_FEE_RECIPIENT not set");
 
         console.log("Deploying EnhancedVault Proxy for implementation:", implementation);
         console.log("  enhancedOptions:", enhancedOptions);
         console.log("  operator:", operator);
         console.log("  vaultSigner:", vaultSigner);
+        console.log("  protocolFeeRecipient:", protocolFeeRecipient);
 
         vm.startBroadcast(deployerPrivateKey);
         ERC1967Proxy proxy = new ERC1967Proxy(
-            implementation, abi.encodeCall(EnhancedVault.initialize, (enhancedOptions, operator, vaultSigner))
+            implementation,
+            abi.encodeCall(EnhancedVault.initialize, (enhancedOptions, operator, vaultSigner, protocolFeeRecipient))
         );
         vm.stopBroadcast();
 
@@ -117,7 +129,10 @@ contract DeployEnhancedVaultProxy is Script {
             " --constructor-args ",
             Strings.toHexString(
                 abi.encode(
-                    implementation, abi.encodeCall(EnhancedVault.initialize, (enhancedOptions, operator, vaultSigner))
+                    implementation,
+                    abi.encodeCall(
+                        EnhancedVault.initialize, (enhancedOptions, operator, vaultSigner, protocolFeeRecipient)
+                    )
                 )
             )
         );

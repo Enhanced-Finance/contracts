@@ -7,9 +7,11 @@ import {stdJson} from "forge-std/StdJson.sol";
 interface IEnhancedVaultConfigTarget {
     function operator() external view returns (address);
     function vaultSigner() external view returns (address);
+    function protocolFeeRecipient() external view returns (address);
     function swapRouter() external view returns (address);
     function setOperator(address newOperator) external;
     function setVaultSigner(address newSigner) external;
+    function setProtocolFeeRecipient(address newRecipient) external;
     function setSwapRouter(address newSwapRouter) external;
     function setAssetApprovalMarginPool(address asset, bool approval) external;
     function setAssetApprovalSwapRouter(address asset, bool approval) external;
@@ -20,9 +22,10 @@ interface IEnhancedVaultConfigTarget {
  *
  * Supported config keys under ".EnhancedVault":
  *   operator             (address)   — setOperator
- *   vaultSigner       (address)   — setVaultSigner
+ *   vaultSigner          (address)   — setVaultSigner
+ *   protocolFeeRecipient (address)   — setProtocolFeeRecipient
  *   swapRouter           (address)   — setSwapRouter
- *   marginPoolApprovals  (array)     — setAssetApprovalMarginPool; pool is read from EnhancedOptions
+ *   marginPoolApprovals  (array)     — setAssetApprovalMarginPool
  *   swapRouterApprovals  (array)     — setAssetApprovalSwapRouter
  *
  * Vault creation via ".EnhancedVault.vaults[]":
@@ -84,7 +87,12 @@ contract ConfigureEnhancedVault is Script {
             }
         }
 
-        // 3. SwapRouter
+        // 3. ProtocolFeeRecipient
+        if (vm.keyExists(configJson, ".EnhancedVault.protocolFeeRecipient")) {
+            _applyProtocolFeeRecipient(vault, configJson.readAddress(".EnhancedVault.protocolFeeRecipient"));
+        }
+
+        // 4. SwapRouter
         if (vm.keyExists(configJson, ".EnhancedVault.swapRouter")) {
             address desiredRouter = configJson.readAddress(".EnhancedVault.swapRouter");
             if (desiredRouter != address(0) && vault.swapRouter() != desiredRouter) {
@@ -125,6 +133,13 @@ contract ConfigureEnhancedVault is Script {
     function _countApprovals(string memory configJson, string memory key) internal view returns (uint256 len) {
         while (vm.keyExistsJson(configJson, string.concat(key, "[", vm.toString(len), "].asset"))) {
             len++;
+        }
+    }
+
+    function _applyProtocolFeeRecipient(IEnhancedVaultConfigTarget vault, address desiredRecipient) internal {
+        if (desiredRecipient != address(0) && vault.protocolFeeRecipient() != desiredRecipient) {
+            console.log("Updating ProtocolFeeRecipient...");
+            vault.setProtocolFeeRecipient(desiredRecipient);
         }
     }
 

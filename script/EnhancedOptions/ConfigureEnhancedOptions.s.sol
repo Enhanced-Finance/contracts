@@ -38,6 +38,15 @@ contract ConfigureEnhancedOptions is Script {
             }
         }
 
+        // 1b. Custody Operator
+        if (vm.keyExists(configJson, ".EnhancedOptions.custodyOperator")) {
+            address desiredCustodyOperator = configJson.readAddress(".EnhancedOptions.custodyOperator");
+            if (enhancedOptions.custodyOperator() != desiredCustodyOperator && desiredCustodyOperator != address(0)) {
+                console.log("Updating CustodyOperator...");
+                enhancedOptions.setCustodyOperator(desiredCustodyOperator);
+            }
+        }
+
         // 2. Controller (Check .deploy first)
         address desiredController;
         if (vm.keyExists(deployJson, ".Controller.proxyAddress")) {
@@ -92,15 +101,6 @@ contract ConfigureEnhancedOptions is Script {
             if (enhancedOptions.feeRecipient() != desiredFeeRecipient && desiredFeeRecipient != address(0)) {
                 console.log("Updating FeeRecipient...");
                 enhancedOptions.setFeeRecipient(desiredFeeRecipient);
-            }
-        }
-
-        // 7. EnhancedSigner
-        if (vm.keyExists(configJson, ".EnhancedOptions.enhancedSigner")) {
-            address desiredEnhancedSigner = configJson.readAddress(".EnhancedOptions.enhancedSigner");
-            if (enhancedOptions.enhancedSigner() != desiredEnhancedSigner && desiredEnhancedSigner != address(0)) {
-                console.log("Updating EnhancedSigner...");
-                enhancedOptions.setEnhancedSigner(desiredEnhancedSigner);
             }
         }
 

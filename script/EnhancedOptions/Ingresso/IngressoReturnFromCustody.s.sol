@@ -9,20 +9,18 @@ import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
 contract IngressoReturnFromCustody is Script {
     using stdJson for string;
 
-    // --- Configuration: Set these values before running ---
-    address constant OWNER = 0x0000000000000000000000000000000000000000; // maker
     uint256 constant VAULT_ID = 1;
-    address constant ASSET = 0x0000000000000000000000000000000000000000;
     uint256 constant AMOUNT = 1e18;
-    // ----------------------------------------------------
 
     function run() public {
-        require(OWNER != address(0), "OWNER not set");
-        require(ASSET != address(0), "ASSET not set");
+        address owner = vm.envAddress("MAKER");
+        address assetAddress = vm.envAddress("ASSET");
+        require(owner != address(0), "MAKER not set");
+        require(assetAddress != address(0), "ASSET not set");
         require(AMOUNT > 0, "AMOUNT not set");
 
-        uint256 repayerPrivateKey = vm.envUint("REPAYER_PRIVATE_KEY");
-        address repayer = vm.addr(repayerPrivateKey);
+        uint256 returnerPrivateKey = vm.envUint("RETURNER_PRIVATE_KEY");
+        address returner = vm.addr(returnerPrivateKey);
 
         address enhancedOptionsAddr = _loadEnhancedOptions();
 
@@ -33,23 +31,23 @@ contract IngressoReturnFromCustody is Script {
         amounts[0] = AMOUNT;
 
         console.log("Executing on:", enhancedOptionsAddr);
-        console.log("Repayer:", repayer);
-        console.log("owner:", OWNER);
+        console.log("Returner:", returner);
+        console.log("owner:", owner);
         console.log("Vault ID:", VAULT_ID);
-        console.log("Asset:", ASSET);
+        console.log("Asset:", assetAddress);
         console.log("Amount:", AMOUNT);
 
-        vm.startBroadcast(repayerPrivateKey);
-        IERC20 asset = IERC20(ASSET);
-        uint256 allowance = asset.allowance(repayer, enhancedOptionsAddr);
+        vm.startBroadcast(returnerPrivateKey);
+        IERC20 asset = IERC20(assetAddress);
+        uint256 allowance = asset.allowance(returner, enhancedOptionsAddr);
         if (allowance < AMOUNT) {
-            console.log("Approving token (repayer -> EnhancedOptions)...");
+            console.log("Approving token (returner -> EnhancedOptions)...");
             asset.approve(enhancedOptionsAddr, type(uint256).max);
         }
-        EnhancedOptions(enhancedOptionsAddr).ingressoReturnFromCustody(OWNER, vaultIds, amounts);
+        EnhancedOptions(enhancedOptionsAddr).ingressoReturnFromCustody(owner, vaultIds, amounts);
         vm.stopBroadcast();
 
-        console.log("RepayBorrow executed successfully");
+        console.log("IngressoReturnFromCustody executed successfully");
     }
 
     function _loadEnhancedOptions() internal view returns (address enhancedOptionsAddr) {

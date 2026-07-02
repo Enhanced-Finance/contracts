@@ -23,7 +23,7 @@ contract QueryAddressBook is Script {
         console.log("=== AddressBook Configuration ===");
         console.log("AddressBook Proxy:", addressBookAddr);
         console.log("---------------------------------");
-        
+
         console.log("Otoken Implementation:", addressBook.getOtokenImpl());
         console.log("Otoken Factory:       ", addressBook.getOtokenFactory());
         console.log("Whitelist:            ", addressBook.getWhitelist());

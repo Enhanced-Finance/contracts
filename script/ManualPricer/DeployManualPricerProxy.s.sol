@@ -13,12 +13,12 @@ contract DeployManualPricerProxy is Script {
     using stdJson for string;
 
     struct AssetConfig {
-        address assetAddress;       // JSON key: "address"
-        address bot;                // JSON key: "bot"
-        uint256 deviationMultiplier;// JSON key: "deviationMultiplier"
-        address owner;              // JSON key: "owner"
-        uint256 priceTimeValidity;  // JSON key: "priceTimeValidity"
-        string symbol;              // JSON key: "symbol"
+        address assetAddress; // JSON key: "address"
+        address bot; // JSON key: "bot"
+        uint256 deviationMultiplier; // JSON key: "deviationMultiplier"
+        address owner; // JSON key: "owner"
+        uint256 priceTimeValidity; // JSON key: "priceTimeValidity"
+        string symbol; // JSON key: "symbol"
     }
 
     struct DeployContext {
@@ -57,7 +57,7 @@ contract DeployManualPricerProxy is Script {
         } else {
             revert("ManualPricer Implementation not found. Run DeployManualPricerImplementation.s.sol first.");
         }
-        
+
         // Read common dependencies ONCE
         address oracleAddr = existingDeployJson.readAddress(".Oracle.proxyAddress");
         address addressBookAddr = existingDeployJson.readAddress(".AddressBook.proxyAddress");
@@ -90,11 +90,7 @@ contract DeployManualPricerProxy is Script {
         }
     }
 
-    function _deployProxy(
-        DeployContext memory context,
-        AssetConfig memory assetConfig,
-        string memory key
-    ) internal {
+    function _deployProxy(DeployContext memory context, AssetConfig memory assetConfig, string memory key) internal {
         address bot = assetConfig.bot;
         address owner = assetConfig.owner;
         address asset = assetConfig.assetAddress;
@@ -103,8 +99,9 @@ contract DeployManualPricerProxy is Script {
         require(owner != address(0), "Owner address not found in asset config");
 
         // Prepare Init Data
-        bytes memory initData =
-            abi.encodeWithSelector(ManualPricer.initialize.selector, bot, asset, context.oracleAddr, context.addressBookAddr, owner);
+        bytes memory initData = abi.encodeWithSelector(
+            ManualPricer.initialize.selector, bot, asset, context.oracleAddr, context.addressBookAddr, owner
+        );
 
         vm.startBroadcast(context.deployerPrivateKey);
         ERC1967Proxy proxy = new ERC1967Proxy(context.implementation, initData);
@@ -116,10 +113,10 @@ contract DeployManualPricerProxy is Script {
     }
 
     function _writeDeploymentData(
-        DeployContext memory context, 
-        address proxy, 
-        address asset, 
-        bytes memory initData, 
+        DeployContext memory context,
+        address proxy,
+        address asset,
+        bytes memory initData,
         string memory key
     ) internal {
         string memory jsonObj = "deployment_data";

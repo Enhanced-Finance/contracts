@@ -62,6 +62,6 @@ contract DeployEnhancedVaultLibraries is Script {
             ".EnhancedVault.cycleLibraryVerifyCommand"
         );
         console.log("EnhancedVault library deployment info saved to:", path);
-        console.log("Use Makefile deploy/upgrade targets so EnhancedVault is compiled with these library addresses.");
+        console.log("Update foundry.toml libraries before deploying EnhancedVault implementation.");
     }
 }

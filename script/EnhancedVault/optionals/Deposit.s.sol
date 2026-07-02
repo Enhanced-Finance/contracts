@@ -7,18 +7,18 @@ import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 contract Deposit is BaseEnhancedVaultScript {
-    bytes32 constant VAULT_HASH = 0x9832d172f61a4ac7cca7bad266a425d65bcb8fb83a3d195c378972572c5f2c3b;
     uint256 constant AMOUNT = 10_000e18;
 
     function run() public {
         uint256 takerPrivateKey = vm.envUint("TAKER_PRIVATE_KEY");
+        bytes32 vaultHash = vm.envBytes32("VAULT_HASH");
         address user = vm.addr(takerPrivateKey);
         (EnhancedVault vault, address vaultAddr) = _loadVault();
-        (EnhancedVault.VaultParams memory params, , , , , ,) = vault.vaults(VAULT_HASH);
+        (EnhancedVault.VaultParams memory params,,,,,,,) = vault.vaults(vaultHash);
         IERC20 collateral = IERC20(params.collateralAsset);
 
         console.log("EnhancedVault:", vaultAddr);
-        console.log("vaultHash:", vm.toString(VAULT_HASH));
+        console.log("vaultHash:", vm.toString(vaultHash));
         console.log("user:", user);
 
         uint256 allowance = collateral.allowance(user, vaultAddr);
@@ -30,7 +30,7 @@ contract Deposit is BaseEnhancedVaultScript {
         }
 
         vm.startBroadcast(takerPrivateKey);
-        vault.deposit(VAULT_HASH, AMOUNT);
+        vault.deposit(vaultHash, AMOUNT);
         vm.stopBroadcast();
     }
 }

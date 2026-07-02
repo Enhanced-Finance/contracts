@@ -39,9 +39,7 @@ contract UpgradeControllerLogic is Script {
             ".ControllerLogic.implementationAddress"
         );
         vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".ControllerLogic.verifyImplementationCommand"
+            string.concat("\"", verifyImplCmd, "\""), deployPath, ".ControllerLogic.verifyImplementationCommand"
         );
 
         console.log("ControllerLogic upgraded:", proxyAddr);

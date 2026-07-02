@@ -13,7 +13,7 @@ contract DeployOracle is Script {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         uint256 chainId = block.chainid;
         string memory chainIdStr = chainId.toString();
-        
+
         console.log("Deploying Oracle Implementation on chain ID:", chainIdStr);
 
         vm.startBroadcast(deployerPrivateKey);
@@ -24,28 +24,29 @@ contract DeployOracle is Script {
 
         string memory jsonObj = "deployment_data";
         string memory deployDir = string.concat(vm.projectRoot(), "/.deploy/");
-        
+
         if (!vm.isDir(deployDir)) {
             vm.createDir(deployDir, true);
         }
 
         string memory path = string.concat(deployDir, chainIdStr, ".json");
-        
+
         if (!vm.isFile(path)) {
             vm.writeJson("{}", path);
         }
-        
+
         vm.serializeString(jsonObj, "contractName", "Oracle");
         vm.serializeAddress(jsonObj, "implementationAddress", address(impl));
-        
+
         string memory verifyImplCmd = string.concat(
-            "forge verify-contract --chain-id ", chainIdStr, 
-            " --num-of-optimizations 200 --watch ", 
-            Strings.toHexString(address(impl)), 
+            "forge verify-contract --chain-id ",
+            chainIdStr,
+            " --num-of-optimizations 200 --watch ",
+            Strings.toHexString(address(impl)),
             " src/Oracle.sol:Oracle"
         );
         string memory finalJson = vm.serializeString(jsonObj, "verifyImplementationCommand", verifyImplCmd);
-        
+
         vm.writeJson(finalJson, path, ".Oracle");
         console.log("Deployment info saved to:", path);
     }

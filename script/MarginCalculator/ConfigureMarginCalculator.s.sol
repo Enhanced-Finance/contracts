@@ -14,16 +14,16 @@ contract ConfigureMarginCalculator is Script {
         string memory chainIdStr = vm.toString(chainId);
         string memory deployPath = string.concat(vm.projectRoot(), "/.deploy/", chainIdStr, ".json");
         string memory configPath = string.concat(vm.projectRoot(), "/config/", chainIdStr, ".json");
-        
+
         require(vm.isFile(deployPath), "Deploy file not found");
         require(vm.isFile(configPath), "Config file not found");
-        
+
         string memory deployJson = vm.readFile(deployPath);
         string memory configJson = vm.readFile(configPath);
 
         address calculatorAddr = deployJson.readAddress(".MarginCalculator.proxyAddress");
         require(calculatorAddr != address(0), "MarginCalculator proxy not found");
-        
+
         MarginCalculator calculator = MarginCalculator(calculatorAddr);
         console.log("Configuring MarginCalculator at:", calculatorAddr);
 
@@ -33,7 +33,7 @@ contract ConfigureMarginCalculator is Script {
         if (vm.keyExists(configJson, ".MarginCalculator.collateralDust")) {
             bytes memory dustBytes = configJson.parseRaw(".MarginCalculator.collateralDust");
             string[] memory assets = abi.decode(dustBytes, (string[])); // This might not work directly with json object keys
-            
+
             // Simpler approach: user should provide an array of objects in config
             // { "collateralDust": [ {"asset": "0x...", "amount": 1000} ] }
             // But stdJson handling of arrays of objects is tricky.
@@ -42,7 +42,7 @@ contract ConfigureMarginCalculator is Script {
             // Let's assume specific keys or structured input.
             // For now, let's skip complex map iteration unless we have a specific structure.
         }
-        
+
         // Configure Liquidation Multiplier
         if (vm.keyExists(configJson, ".MarginCalculator.liquidationMultiplier")) {
             uint256 desired = configJson.readUint(".MarginCalculator.liquidationMultiplier");

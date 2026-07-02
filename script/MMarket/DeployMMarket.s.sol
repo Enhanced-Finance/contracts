@@ -13,7 +13,7 @@ contract DeployMMarket is Script {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         uint256 chainId = block.chainid;
         string memory chainIdStr = chainId.toString();
-        
+
         console.log("Deploying MMarket Implementation on chain ID:", chainIdStr);
 
         vm.startBroadcast(deployerPrivateKey);
@@ -24,28 +24,29 @@ contract DeployMMarket is Script {
 
         string memory jsonObj = "deployment_data";
         string memory deployDir = string.concat(vm.projectRoot(), "/.deploy/");
-        
+
         if (!vm.isDir(deployDir)) {
             vm.createDir(deployDir, true);
         }
 
         string memory path = string.concat(deployDir, chainIdStr, ".json");
-        
+
         if (!vm.isFile(path)) {
             vm.writeJson("{}", path);
         }
-        
+
         vm.serializeString(jsonObj, "contractName", "MMarket");
         vm.serializeAddress(jsonObj, "implementationAddress", address(impl));
-        
+
         string memory verifyImplCmd = string.concat(
-            "forge verify-contract --chain-id ", chainIdStr, 
-            " --num-of-optimizations 200 --watch ", 
-            Strings.toHexString(address(impl)), 
+            "forge verify-contract --chain-id ",
+            chainIdStr,
+            " --num-of-optimizations 200 --watch ",
+            Strings.toHexString(address(impl)),
             " src/MMarket.sol:MMarket"
         );
         string memory finalJson = vm.serializeString(jsonObj, "verifyImplementationCommand", verifyImplCmd);
-        
+
         vm.writeJson(finalJson, path, ".MMarket");
         console.log("Deployment info saved to:", path);
     }

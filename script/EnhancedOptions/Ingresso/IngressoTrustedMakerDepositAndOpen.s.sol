@@ -5,13 +5,12 @@ import {Script, console} from "lib/forge-std/src/Script.sol";
 import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
 import {Parser} from "src/core/libs/Parser.sol";
 import {stdJson} from "lib/forge-std/src/StdJson.sol";
-import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Executes `ingressoTrustedMakerDepositAndOpen`.
 ///
 ///         Atomic: deposit transfer asset + open trusted maker position.
 ///         Transfer payload: payer signs Transfer digest (130 or 150 bytes).
-///         Order payload: 361-byte Quote+Confirmation; only taker signs confirmation.
+///         Order payload: 377-byte Quote+Confirmation; only taker signs confirmation.
 ///         Maker must be registered as trustedMaker in EnhancedOptions.
 contract IngressoTrustedMakerDepositAndOpen is Script {
     using stdJson for string;
@@ -20,11 +19,8 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
     uint256 constant TRANSFER_CHAIN_ID = 11155111;
     uint256 constant DEPOSIT_AMOUNT = 1000000 * 1e18; // 18 decimals
     uint64 constant TRANSFER_NONCE = 1;
-    // Set to address(0) to have the user pay for themselves (130-byte payload).
-    address constant PAYER_ADDRESS = address(0);
 
     // --- Quote / Confirmation Configuration ---
-    address constant ASSET_ADDRESS = 0xFfFFFFff00000000000000000000000000000001; // Replace with underlying
     uint256 constant CHAIN_ID = 11155111;
     bool constant IS_PUT = false;
     bool constant IS_PHYSICALLY_SETTLED = false;
@@ -36,10 +32,9 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
     uint256 constant QUANTITY = 1000000 * 1e18;
     bool constant IS_TAKER_BUY = true;
     uint64 constant VALID_UNTIL = 1800000000;
-    address constant USD = 0x134b5f74d65a34eb6F9CdaD5eD664b45A167cC43; // Quote asset
-    address constant COLLATERAL_ASSET = 0xFfFFFFff00000000000000000000000000000001; // Same as underlying for call
     uint256 constant COLLATERAL_AMOUNT = 1000000 * 1e18;
-    uint256 constant FEE = 0;
+    uint256 constant MAKER_FEE = 0;
+    uint256 constant TAKER_FEE = 0;
     // ----------------------------------------------------
 
     bytes32 constant TRANSFER_TYPEHASH =
@@ -59,6 +54,9 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
 
     function run() public {
         address DEPOSIT_ASSET = vm.envAddress("STRIKE");
+        address assetAddress = vm.envAddress("UNDERLYING");
+        address usd = vm.envAddress("STRIKE");
+        address collateralAsset = vm.envOr("COLLATERAL_ASSET", assetAddress);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -72,8 +70,9 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
         uint256 userPrivateKey = vm.envUint("USER_PRIVATE_KEY");
         address user = vm.addr(userPrivateKey);
 
-        bool hasDedicatedPayer = PAYER_ADDRESS != address(0);
-        address payer = hasDedicatedPayer ? PAYER_ADDRESS : user;
+        address payerAddress = vm.envOr("PAYER", address(0));
+        bool hasDedicatedPayer = payerAddress != address(0);
+        address payer = hasDedicatedPayer ? payerAddress : user;
         uint256 payerPrivateKey = hasDedicatedPayer ? vm.envUint("PAYER_PRIVATE_KEY") : userPrivateKey;
 
         console.log("Deployer (Operator):", deployer);
@@ -98,14 +97,14 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
         // ==========================================
         // 0. Approve: payer -> MMarket
         // ==========================================
-        vm.startBroadcast(payerPrivateKey);
-        IERC20 depositAsset = IERC20(DEPOSIT_ASSET);
-        uint256 allowance = depositAsset.allowance(payer, mmarketAddr);
-        if (allowance < DEPOSIT_AMOUNT) {
-            console.log("Approving deposit token (payer -> MMarket)...");
-            depositAsset.approve(mmarketAddr, type(uint256).max);
-        }
-        vm.stopBroadcast();
+        // vm.startBroadcast(payerPrivateKey);
+        // IERC20 depositAsset = IERC20(DEPOSIT_ASSET);
+        // uint256 allowance = depositAsset.allowance(payer, mmarketAddr);
+        // if (allowance < DEPOSIT_AMOUNT) {
+        //     console.log("Approving deposit token (payer -> MMarket)...");
+        //     depositAsset.approve(mmarketAddr, type(uint256).max);
+        // }
+        // vm.stopBroadcast();
 
         // ==========================================
         // 1. Build transferPayload (same as IngressoMMarketDeposit)
@@ -124,17 +123,18 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerPrivateKey, transferDigest);
         bytes memory transferSig = abi.encodePacked(r, s, v);
 
-        bytes memory transferPayload =
-            hasDedicatedPayer ? _packTransferWithPayer(transfer, transferSig, payer) : _packTransfer(transfer, transferSig);
+        bytes memory transferPayload = hasDedicatedPayer
+            ? _packTransferWithPayer(transfer, transferSig, payer)
+            : _packTransfer(transfer, transferSig);
 
         console.log("Transfer payload length:", transferPayload.length);
 
         // ==========================================
-        // 2. Build orderPayload (361-byte Quote+Confirmation)
+        // 2. Build orderPayload (377-byte Quote+Confirmation)
         //    Only taker signs confirmation. No quote signature needed.
         // ==========================================
         Parser.Quote memory quote = Parser.Quote({
-            assetAddress: ASSET_ADDRESS,
+            assetAddress: assetAddress,
             chainId: CHAIN_ID,
             isPut: IS_PUT,
             isPhysicallySettled: IS_PHYSICALLY_SETTLED,
@@ -146,8 +146,8 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
             quantity: QUOTE_QUANTITY,
             isTakerBuy: IS_TAKER_BUY,
             validUntil: VALID_UNTIL,
-            usd: USD,
-            collateralAsset: COLLATERAL_ASSET
+            usd: usd,
+            collateralAsset: collateralAsset
         });
 
         // empty quote signature — contract skips quote sig verification for trusted maker
@@ -155,7 +155,7 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
 
         Parser.Confirmation memory confirmation = Parser.Confirmation({
             maker: maker,
-            assetAddress: ASSET_ADDRESS,
+            assetAddress: assetAddress,
             chainId: CHAIN_ID,
             expiry: EXPIRY,
             isPut: IS_PUT,
@@ -168,8 +168,8 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
             strike: STRIKE,
             taker: taker,
             isTakerBuy: IS_TAKER_BUY,
-            usd: USD,
-            collateralAsset: COLLATERAL_ASSET,
+            usd: usd,
+            collateralAsset: collateralAsset,
             collateralAmount: COLLATERAL_AMOUNT
         });
 
@@ -178,9 +178,9 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
         (v, r, s) = vm.sign(takerPrivateKey, confDigest);
         bytes memory confSig = abi.encodePacked(r, s, v);
 
-        bytes memory orderPayload = _packPayload(quote, confirmation, emptyQuoteSig, confSig, FEE);
+        bytes memory orderPayload = _packPayload(quote, confirmation, emptyQuoteSig, confSig, MAKER_FEE, TAKER_FEE);
         console.log("Order payload length:", orderPayload.length);
-        require(orderPayload.length == 361, "Invalid order payload length, expected 361");
+        require(orderPayload.length == 377, "Invalid order payload length, expected 377");
 
         // ==========================================
         // 3. Execute
@@ -279,7 +279,8 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
         Parser.Confirmation memory c,
         bytes memory quoteSig,
         bytes memory confSig,
-        uint256 fee
+        uint256 protocolFee,
+        uint256 makerFee
     ) internal pure returns (bytes memory) {
         return abi.encodePacked(
             c.maker, // 20
@@ -301,7 +302,8 @@ contract IngressoTrustedMakerDepositAndOpen is Script {
             q.usd, // 20
             q.collateralAsset, // 20
             uint128(c.collateralAmount), // 16
-            uint128(fee) // 16
+            uint128(protocolFee), // 16
+            uint128(makerFee) // 16
         );
     }
 }

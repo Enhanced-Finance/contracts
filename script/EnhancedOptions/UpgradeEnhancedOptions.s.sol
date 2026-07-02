@@ -39,9 +39,7 @@ contract UpgradeEnhancedOptions is Script {
             ".EnhancedOptions.implementationAddress"
         );
         vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".EnhancedOptions.verifyImplementationCommand"
+            string.concat("\"", verifyImplCmd, "\""), deployPath, ".EnhancedOptions.verifyImplementationCommand"
         );
 
         console.log("EnhancedOptions upgraded:", proxyAddr);

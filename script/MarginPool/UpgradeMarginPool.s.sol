@@ -38,11 +38,7 @@ contract UpgradeMarginPool is Script {
             deployPath,
             ".MarginPool.implementationAddress"
         );
-        vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".MarginPool.verifyImplementationCommand"
-        );
+        vm.writeJson(string.concat("\"", verifyImplCmd, "\""), deployPath, ".MarginPool.verifyImplementationCommand");
 
         console.log("MarginPool upgraded:", proxyAddr);
         console.log("New implementation:", address(newImplementation));

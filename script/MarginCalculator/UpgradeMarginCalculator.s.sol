@@ -39,9 +39,7 @@ contract UpgradeMarginCalculator is Script {
             ".MarginCalculator.implementationAddress"
         );
         vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".MarginCalculator.verifyImplementationCommand"
+            string.concat("\"", verifyImplCmd, "\""), deployPath, ".MarginCalculator.verifyImplementationCommand"
         );
 
         console.log("MarginCalculator upgraded:", proxyAddr);
