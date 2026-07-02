@@ -22,7 +22,7 @@ import {EnhancedVaultRecordsLib} from "./libs/EnhancedVaultRecordsLib.sol";
  * @notice Manages multiple isolated option-writing vaults with per-user fund accounting
  *         (`userFunds`) and O(1) settlement math via cumulative ratio accumulators.
  *
- *         Each vault is identified by keccak256(abi.encode(VaultParams, protocolFeeRate)).
+ *         Each vault is identified by keccak256(abi.encode(VaultParams)).
  *         Runtime flow is the three-step cycle pipeline:
  *         `settlePreviousCycle` -> `processQueuedUsers` -> `startNextCycle`.
  *         Users deposit/withdraw/buyback against user-level balances, and queue processing
@@ -43,7 +43,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     uint256 private constant PRECISION = 1e18;
     // minPrincipalRatio / buybackPriceRatio precision base (10000 = 100%).
     uint256 private constant RATIO_BASE = 10_000;
-    // protocolFeeRate precision base (10000000 = 100%).
+    // protocolFeeRate precision base (10000000 = 100%) for the per-cycle settlement fee.
     uint256 private constant PROTOCOL_FEE_RATE_BASE = 10_000_000;
     int256 private constant MAX_SIGNED_BPS = 10_000;
     uint256 internal constant MAX_BATCH_SIZE = 100;
@@ -80,7 +80,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 totalDeposited; // running total of collateral held (capacity check)
         bool isPaused;
         bool isEnd;
-        uint256 protocolFeeRate;
+        uint256 protocolFeeRate; // per-cycle protocol fee rate charged during cycle settlement
     }
 
     /// @notice Per-cycle record
@@ -261,6 +261,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         int256 buybackPriceRatio,
         uint256 protocolFeeRate
     );
+    event VaultProtocolFeeRateChanged(bytes32 indexed vaultHash, uint256 oldRate, uint256 newRate);
     event Deposited(bytes32 indexed vaultHash, address indexed user, uint256 recordId, uint256 amount);
     event WithdrawRequested(bytes32 indexed vaultHash, address indexed user, uint256 recordId, uint256 amount);
     // event UserQueued(bytes32 indexed vaultHash, address indexed user);
@@ -436,7 +437,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         _requireValidSignedBps(_params.buybackPriceRatio);
         _requireValidProtocolFeeRate(protocolFeeRate);
 
-        vaultHash = keccak256(abi.encode(_params, protocolFeeRate));
+        vaultHash = keccak256(abi.encode(_params));
         if (vaults[vaultHash].params.cycleDuration != 0) revert VaultAlreadyExists();
 
         VaultState storage st = vaults[vaultHash];
@@ -487,6 +488,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     function setVaultEnd(bytes32 vaultHash, bool _end) external onlyOwner vaultExists(vaultHash) {
         vaults[vaultHash].isEnd = _end;
+    }
+
+    function setVaultProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate)
+        external
+        onlyOwner
+        vaultExists(vaultHash)
+    {
+        _requireValidProtocolFeeRate(protocolFeeRate);
+        uint256 oldRate = vaults[vaultHash].protocolFeeRate;
+        vaults[vaultHash].protocolFeeRate = protocolFeeRate;
+        emit VaultProtocolFeeRateChanged(vaultHash, oldRate, protocolFeeRate);
     }
 
     function pauseVault(bytes32 vaultHash) external onlyOperator vaultExists(vaultHash) {

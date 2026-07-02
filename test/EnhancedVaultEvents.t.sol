@@ -94,7 +94,7 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
     function testCreateVault_ShouldEmitFullParamsAndInitialState() external {
         EnhancedVault.VaultParams memory params = _vaultParams();
         uint256 expectedProtocolFeeRate = 10_000;
-        bytes32 expectedHash = keccak256(abi.encode(params, expectedProtocolFeeRate));
+        bytes32 expectedHash = keccak256(abi.encode(params));
 
         vm.recordLogs();
         vm.prank(owner);
@@ -268,14 +268,61 @@ contract EnhancedVaultEventsTest is EnhancedVaultLinkedLibraries {
         );
     }
 
-    function testCreateVaultHash_ShouldChangeWhenProtocolFeeRateChanges() external {
+    function testCreateVaultHash_ShouldIgnoreProtocolFeeRate() external {
         EnhancedVault.VaultParams memory params = _vaultParams();
 
-        assertNotEq(
-            keccak256(abi.encode(params, 0)),
-            keccak256(abi.encode(params, 100_000)),
-            "vault hash should include protocolFeeRate"
-        );
+        vm.prank(owner);
+        bytes32 firstHash = vault.createVault(params, 0);
+
+        assertEq(firstHash, keccak256(abi.encode(params)), "vault hash should only include VaultParams");
+
+        vm.prank(owner);
+        vm.expectRevert(EnhancedVault.VaultAlreadyExists.selector);
+        vault.createVault(params, 100_000);
+    }
+
+    function testSetVaultProtocolFeeRate_ShouldUpdateRateAndApplyToLaterSettlement() external {
+        EnhancedVault.VaultParams memory params = _vaultParams();
+
+        vm.prank(owner);
+        bytes32 vaultHash = vault.createVault(params, 0);
+
+        vm.prank(owner);
+        vault.setVaultProtocolFeeRate(vaultHash, 100_000);
+        assertEq(_vaultState(vaultHash).protocolFeeRate, 100_000, "protocol fee rate should update");
+
+        vm.prank(user);
+        vault.deposit(vaultHash, 100 ether);
+
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(operator);
+        vault.nextCycle(vaultHash);
+
+        EnhancedVault.VaultState memory activeCycle = _vaultState(vaultHash);
+        vm.warp(activeCycle.currentCycleStart + activeCycle.params.cycleDuration + 1);
+        vm.prank(operator);
+        vault.nextCycle(vaultHash);
+
+        EnhancedVault.CycleRecord memory settled = _cycleRecord(vaultHash, 2);
+        assertEq(vault.protocolFeeAccrued(vaultHash), 1 ether, "updated fee rate should accrue protocol fee");
+        assertEq(settled.collateralRatio, 99e16, "updated fee rate should reduce collateral ratio");
+        assertEq(_vaultState(vaultHash).totalDeposited, 99 ether, "TVL should use updated fee rate");
+    }
+
+    function testSetVaultProtocolFeeRate_ShouldBeOwnerOnlyAndValidateMaximum() external {
+        bytes32 vaultHash = _createVault();
+
+        vm.prank(user);
+        vm.expectRevert();
+        vault.setVaultProtocolFeeRate(vaultHash, 100_000);
+
+        vm.prank(owner);
+        vm.expectRevert();
+        vault.setVaultProtocolFeeRate(vaultHash, 10_000_001);
+
+        vm.prank(owner);
+        vault.setVaultProtocolFeeRate(vaultHash, 10_000_000);
+        assertEq(_vaultState(vaultHash).protocolFeeRate, 10_000_000, "maximum protocol fee rate should be accepted");
     }
 
     function testCreateVault_ShouldRevertWhenStrikePriceBpsIsOutOfRange() external {

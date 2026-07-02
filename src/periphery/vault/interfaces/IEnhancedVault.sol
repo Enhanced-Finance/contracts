@@ -52,6 +52,7 @@ interface IEnhancedVault {
 
     function setVaultPaused(bytes32 vaultHash, bool paused) external;
     function setVaultEnd(bytes32 vaultHash, bool isEnd) external;
+    function setVaultProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate) external;
     function pauseVault(bytes32 vaultHash) external;
     function withdraw(bytes32 vaultHash, uint256 amount) external;
     function cancelDeposit(bytes32 vaultHash, uint256 recordId) external;

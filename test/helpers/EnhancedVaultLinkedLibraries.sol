@@ -11,6 +11,7 @@ abstract contract EnhancedVaultLinkedLibraries is Test {
     address internal constant ENHANCED_VAULT_CYCLE_LIBRARY_PLACEHOLDER = 0x497c8513AB92cAb4d645637587c64e033D825bb1;
     address internal constant ENHANCED_VAULT_CYCLE_LIBRARY_LEGACY = 0x14202F50753e90Cd9192C703c908Ef7CaBE91354;
     address internal constant ENHANCED_VAULT_CYCLE_LIBRARY_CURRENT = 0x6281EDA7967415D31A03F10818a470028dd7a4B1;
+    address internal constant ENHANCED_VAULT_CYCLE_LIBRARY_CURRENT_2 = 0x36A621f3Af6Ba0E2adcE886595516d4Fc782C972;
 
     function _etchEnhancedVaultLibraries() internal {
         vm.etch(ENHANCED_VAULT_RECORDS_LIBRARY_PLACEHOLDER, type(EnhancedVaultRecordsLib).runtimeCode);
@@ -18,5 +19,6 @@ abstract contract EnhancedVaultLinkedLibraries is Test {
         vm.etch(ENHANCED_VAULT_CYCLE_LIBRARY_PLACEHOLDER, type(EnhancedVaultCycleLib).runtimeCode);
         vm.etch(ENHANCED_VAULT_CYCLE_LIBRARY_LEGACY, type(EnhancedVaultCycleLib).runtimeCode);
         vm.etch(ENHANCED_VAULT_CYCLE_LIBRARY_CURRENT, type(EnhancedVaultCycleLib).runtimeCode);
+        vm.etch(ENHANCED_VAULT_CYCLE_LIBRARY_CURRENT_2, type(EnhancedVaultCycleLib).runtimeCode);
     }
 }
