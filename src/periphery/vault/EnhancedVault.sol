@@ -708,7 +708,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         VaultState storage st = vaults[vaultHash];
         UserFund storage fund = userFunds[vaultHash][msg.sender];
-        if (fund.autoBuyEnabled) revert AutoBuyPremiumClaimDisabled();
+        if (fund.autoBuyEnabled || fund.buybackEnabled) revert AutoBuyPremiumClaimDisabled();
 
         uint256 settledCycleId = _settledCycleId(vaultHash);
         uint256 cycleCumPremium = cumPremium[vaultHash][settledCycleId];
