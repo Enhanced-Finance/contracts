@@ -362,6 +362,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     error UserNotBelowMinPrincipalRatio(address user);
     error WithdrawConversionPreviewMismatch();
     error FundNotFound();
+    error AutoBuyClaimRequestDisabled();
+    error AutoBuyPremiumClaimDisabled();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Modifiers
@@ -632,6 +634,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         _requireActiveAndNotPaused(vaultHash);
         _requireOpenPhase(vaultHash);
         UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (fund.autoBuyEnabled) revert AutoBuyClaimRequestDisabled();
         // System-pause fast path: user has pre-settled funds, bypass queue.
         if (fund.systemPausedPrincipal > 0) {
             if (amount > fund.systemPausedPrincipal) revert InsufficientPendingAmount();
@@ -707,6 +710,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         VaultState storage st = vaults[vaultHash];
         UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (fund.autoBuyEnabled) revert AutoBuyPremiumClaimDisabled();
 
         uint256 settledCycleId = _settledCycleId(vaultHash);
         uint256 cycleCumPremium = cumPremium[vaultHash][settledCycleId];
@@ -819,6 +823,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (users.length == 0 || users.length > MAX_BATCH_SIZE) revert InvalidBatchSize();
         if (swapParams.amountIn == 0) revert ZeroAmount();
         VaultState storage st = vaults[vaultHash];
+        uint256 cycleCumPremium = cumPremium[vaultHash][_settledCycleId(vaultHash)];
         uint256 itemLen = users.length;
         uint256 totalAvailablePremium;
         uint256[] memory availablePremiums = new uint256[](itemLen);
@@ -826,6 +831,10 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         for (uint256 i; i < itemLen;) {
             UserFund storage fund = userFunds[vaultHash][users[i]];
             if (!(fund.buybackEnabled || fund.autoBuyEnabled)) revert BuybackDisabled(users[i]);
+            uint256 premium = _materializeProjectedPremium(fund, cycleCumPremium);
+            if (premium > 0) {
+                fund.entryCumPremium = cycleCumPremium;
+            }
             uint256 available = fund.materializedPremium;
             if (available == 0) revert InsufficientPremium();
             availablePremiums[i] = available;

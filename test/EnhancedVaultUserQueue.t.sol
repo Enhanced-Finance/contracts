@@ -192,6 +192,11 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.setBuybackEnabled(vaultHash, true);
     }
 
+    function _disableAutoBuy(bytes32 vaultHash, address targetUser) internal {
+        vm.prank(targetUser);
+        vault.setAutoBuyEnabled(vaultHash, false);
+    }
+
     function _vaultState(bytes32 vaultHash) internal view returns (EnhancedVault.VaultState memory st) {
         (
             EnhancedVault.VaultParams memory params,
@@ -554,6 +559,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         collateral.approve(address(vault), type(uint256).max);
 
         _depositAs(user, VAULT_HASH, 100 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -642,6 +648,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testProportionalBasisReduction_ShouldPreserveLossRatioOnPartialWithdraw() external {
         _depositAs(user, VAULT_HASH, 100 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -663,6 +670,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testFullWithdrawAfterLoss_ShouldClearInitialAmountTotal() external {
         _depositAs(user, VAULT_HASH, 100 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -1123,6 +1131,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
         _depositAs(user, VAULT_HASH, 100 ether);
         _depositAs(user2, VAULT_HASH, 50 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -1240,6 +1249,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
         _depositAs(user, VAULT_HASH, 100 ether);
         _depositAs(user2, VAULT_HASH, 50 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -1281,6 +1291,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testSystemPauseFundsAfterLoss_ShouldReduceBasisProportionally() external {
         _depositAs(user, VAULT_HASH, 100 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -1315,6 +1326,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
+        _disableAutoBuy(VAULT_HASH, user);
 
         vm.warp(2 days);
         vm.prank(operator);
@@ -1512,6 +1524,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         _depositAs(user, VAULT_HASH, 100 ether);
         _depositAs(user2, VAULT_HASH, 50 ether);
         _depositAs(user3, VAULT_HASH, 25 ether);
+        _disableAutoBuy(VAULT_HASH, user);
+        _disableAutoBuy(VAULT_HASH, user2);
+        _disableAutoBuy(VAULT_HASH, user3);
 
         vm.warp(2 days);
         vm.prank(operator);

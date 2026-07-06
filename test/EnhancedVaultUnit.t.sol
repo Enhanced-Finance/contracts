@@ -508,12 +508,31 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10)[0], user, "buyback user should be queued");
     }
 
-    function testDeposit_ShouldDefaultNewUserFundToManualBuybackAndAutoBuyDisabled() external {
+    function testBuyback_ShouldMaterializeProjectedPremiumBeforeAvailabilityCheck() external {
+        MockSwapRouterForVaultUnit router = new MockSwapRouterForVaultUnit(1 ether);
+        vault.seedSwapRouter(address(router));
+        vault.seedCurrentCycleId(VAULT_HASH, 2);
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 1e16);
+        vault.seedCumPremium(VAULT_HASH, 1, 3e16);
+
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vm.prank(operator);
+        vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.materializedPremium, 1 ether, "buyback should materialize projected premium then spend");
+        assertEq(fund.entryCumPremium, 3e16, "buyback should advance premium checkpoint after materializing");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "buyback output should land in pending active");
+    }
+
+    function testDeposit_ShouldDefaultNewUserFundToManualBuybackDisabledAndAutoBuyEnabled() external {
         _depositAs(user, 1 ether);
 
         EnhancedVault.UserFund memory fund = _userFund(user);
         assertFalse(fund.buybackEnabled, "first fund creation should default manual buyback off");
-        assertFalse(fund.autoBuyEnabled, "first fund creation should default auto-buy off");
+        assertTrue(fund.autoBuyEnabled, "first fund creation should default auto-buy on");
     }
 
     function testDeposit_ShouldNotOverrideExplicitBuybackOptOut() external {
@@ -619,6 +638,17 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(BUYBACK_DISABLED_SELECTOR, user));
         vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+    }
+
+    function testWithdraw_ShouldRevert_WhenAutoBuyIsEnabled() external {
+        vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.AutoBuyClaimRequestDisabled.selector);
+        vault.withdraw(VAULT_HASH, 7 ether);
     }
 
     function testClaimWithdraw_ShouldReduceStoppedPrincipalAndTransferCollateral() external {
@@ -787,6 +817,17 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         EnhancedVault.UserFund memory fund = _userFund(user);
         assertEq(balanceAfter - balanceBefore, 3 ether, "claim should transfer strike asset");
         assertEq(fund.materializedPremium, 2 ether, "claim should reduce materialized premium");
+    }
+
+    function testClaimPremium_ShouldRevert_WhenAutoBuyIsEnabled() external {
+        vault.seedMaterializedPremium(VAULT_HASH, user, 5 ether);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.AutoBuyPremiumClaimDisabled.selector);
+        vault.claimPremium(VAULT_HASH, 3 ether);
     }
 
     function testClaimPremium_ShouldMaterializeProjectedPremiumBeforeTransfer() external {
