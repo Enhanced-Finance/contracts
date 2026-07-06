@@ -640,20 +640,28 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
     }
 
-    function testWithdraw_ShouldRevert_WhenAutoBuyIsEnabled() external {
+    function testWithdraw_ShouldAllowRequest_WhenAutoBuyIsEnabled() external {
         vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
 
         vm.prank(user);
         vault.setAutoBuyEnabled(VAULT_HASH, true);
 
         vm.prank(user);
-        vm.expectRevert(EnhancedVault.AutoBuyClaimRequestDisabled.selector);
         vault.withdraw(VAULT_HASH, 7 ether);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        assertEq(fund.pendingWithdrawAmount, 7 ether, "auto-buy should not block principal withdraw requests");
+        assertEq(withdraws.length, 1, "withdraw request should be recorded");
+        assertEq(withdraws[0].amount, 7 ether, "withdraw request amount mismatch");
     }
 
-    function testClaimWithdraw_ShouldReduceStoppedPrincipalAndTransferCollateral() external {
+    function testClaimWithdraw_ShouldAllowPrincipalClaim_WhenAutoBuyIsEnabled() external {
         vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
         vault.seedCycleRecord(VAULT_HASH, 1, 20 ether, 20 ether);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
 
         vm.prank(user);
         vault.withdraw(VAULT_HASH, 7 ether);

@@ -362,7 +362,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     error UserNotBelowMinPrincipalRatio(address user);
     error WithdrawConversionPreviewMismatch();
     error FundNotFound();
-    error AutoBuyClaimRequestDisabled();
     error AutoBuyPremiumClaimDisabled();
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -634,7 +633,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         _requireActiveAndNotPaused(vaultHash);
         _requireOpenPhase(vaultHash);
         UserFund storage fund = userFunds[vaultHash][msg.sender];
-        if (fund.autoBuyEnabled) revert AutoBuyClaimRequestDisabled();
         // System-pause fast path: user has pre-settled funds, bypass queue.
         if (fund.systemPausedPrincipal > 0) {
             if (amount > fund.systemPausedPrincipal) revert InsufficientPendingAmount();
