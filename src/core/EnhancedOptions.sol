@@ -599,6 +599,7 @@ contract EnhancedOptions is
         if (!SignatureChecker.isValidSignatureNow(sellerConfirmation.taker, confDigest, confSig)) {
             revert InvalidConfirmationSignature();
         }
+        _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
         (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, protocolFee, makerFee);
     }
