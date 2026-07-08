@@ -21,7 +21,6 @@ library EnhancedVaultRecordsLib {
         uint256 toRecordId,
         uint256 amount
     );
-
     error RecordNotFound();
     error RecordTypeMismatch();
     error RecordNotPending();
@@ -55,7 +54,8 @@ library EnhancedVaultRecordsLib {
                     vaults,
                     vaultHash,
                     user,
-                    amount
+                    amount,
+                    false
                 );
                 unchecked {
                     refunded += amount;
@@ -86,6 +86,63 @@ library EnhancedVaultRecordsLib {
                 ++i;
             }
         }
+    }
+
+    function processExitAllQueuedUser(
+        uint256[] storage pendingDepositIds,
+        mapping(uint256 => EnhancedVault.FundRecord) storage pendingDepositRecords,
+        mapping(uint256 => uint256) storage pendingDepositIndex,
+        uint256[] storage pendingWithdrawRequestIds,
+        mapping(uint256 => EnhancedVault.FundRecord) storage pendingWithdrawRequestRecords,
+        mapping(uint256 => uint256) storage pendingWithdrawRequestIndex,
+        uint256[] storage pendingWithdrawIds,
+        mapping(uint256 => EnhancedVault.FundRecord) storage pendingWithdrawRecords,
+        mapping(uint256 => uint256) storage pendingWithdrawIndex,
+        mapping(bytes32 => mapping(address => EnhancedVault.UserFund)) storage userFunds,
+        mapping(bytes32 => EnhancedVault.VaultState) storage vaults,
+        bytes32 vaultHash,
+        address user,
+        uint256 requestId,
+        uint256 settledActive
+    ) public {
+        EnhancedVault.UserFund storage fund = userFunds[vaultHash][user];
+        uint256 exitAmount =
+            fund.stoppedPrincipal + settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+
+        clearPendingWithdrawRequests(
+            pendingWithdrawRequestIds, pendingWithdrawRequestIndex, pendingWithdrawRequestRecords
+        );
+        clearPendingWithdrawRequests(pendingWithdrawIds, pendingWithdrawIndex, pendingWithdrawRecords);
+        markPendingDepositRecordsConverted(
+            pendingDepositIds, pendingDepositRecords, pendingDepositIndex, vaultHash, user
+        );
+
+        if (exitAmount > 0) {
+            uint256 withdrawId = addPendingWithdraw(
+                userFunds,
+                pendingWithdrawIds,
+                pendingWithdrawRecords,
+                pendingWithdrawIndex,
+                vaults,
+                vaultHash,
+                user,
+                exitAmount,
+                true
+            );
+            fund.stoppedPrincipal = exitAmount;
+            emit FundRecordConverted(vaultHash, user, requestId, withdrawId, exitAmount);
+        } else {
+            fund.stoppedPrincipal = 0;
+            emit FundRecordConverted(vaultHash, user, requestId, 0, 0);
+        }
+
+        fund.activePrincipal = 0;
+        fund.pendingActivePrincipal = 0;
+        fund.pendingWithdrawAmount = 0;
+        fund.systemPausedPrincipal = 0;
+        fund.entryCumCollateral = 0;
+        fund.entryCumPremium = 0;
+        fund.initialAmountTotal = 0;
     }
 
     function convertWithdrawRequestRecordsToWithdraw(
@@ -214,7 +271,8 @@ library EnhancedVaultRecordsLib {
                 vaults,
                 vaultHash,
                 user,
-                converted
+                converted,
+                false
             );
         }
         emit FundRecordConverted(vaultHash, user, withdrawRequestId, withdrawId, converted);
@@ -249,7 +307,8 @@ library EnhancedVaultRecordsLib {
             user: user,
             recordType: EnhancedVault.FundRecordType.DEPOSIT,
             amount: amount,
-            createdCycleId: vaults[vaultHash].currentCycleId
+            createdCycleId: vaults[vaultHash].currentCycleId,
+            isExitAll: false
         });
         ids.push(recordId);
         indexes[recordId] = ids.length;
@@ -265,7 +324,8 @@ library EnhancedVaultRecordsLib {
         mapping(bytes32 => EnhancedVault.VaultState) storage vaults,
         bytes32 vaultHash,
         address user,
-        uint256 amount
+        uint256 amount,
+        bool isExitAll
     ) public returns (uint256 recordId) {
         uint256 exitCount = ids.length + pendingWithdrawIds.length;
         if (exitCount >= MAX_PENDING_EXIT_RECORDS_PER_USER) revert PendingRecordLimitExceeded();
@@ -276,7 +336,8 @@ library EnhancedVaultRecordsLib {
             user: user,
             recordType: EnhancedVault.FundRecordType.WITHDRAW_REQUEST,
             amount: amount,
-            createdCycleId: vaults[vaultHash].currentCycleId
+            createdCycleId: vaults[vaultHash].currentCycleId,
+            isExitAll: isExitAll
         });
         ids.push(recordId);
         indexes[recordId] = ids.length;
@@ -291,7 +352,8 @@ library EnhancedVaultRecordsLib {
         mapping(bytes32 => EnhancedVault.VaultState) storage vaults,
         bytes32 vaultHash,
         address user,
-        uint256 amount
+        uint256 amount,
+        bool isExitAll
     ) public returns (uint256 recordId) {
         recordId = nextRecordId(userFunds, vaultHash, user);
         records[recordId] = EnhancedVault.FundRecord({
@@ -300,7 +362,8 @@ library EnhancedVaultRecordsLib {
             user: user,
             recordType: EnhancedVault.FundRecordType.WITHDRAW,
             amount: amount,
-            createdCycleId: vaults[vaultHash].currentCycleId
+            createdCycleId: vaults[vaultHash].currentCycleId,
+            isExitAll: isExitAll
         });
         ids.push(recordId);
         indexes[recordId] = ids.length;
@@ -325,6 +388,19 @@ library EnhancedVaultRecordsLib {
         ids.pop();
         delete indexMap[recordId];
         delete recordMap[recordId];
+    }
+
+    function clearPendingWithdrawRequests(
+        uint256[] storage ids,
+        mapping(uint256 => uint256) storage indexMap,
+        mapping(uint256 => EnhancedVault.FundRecord) storage recordMap
+    ) public {
+        while (ids.length != 0) {
+            uint256 recordId = ids[ids.length - 1];
+            ids.pop();
+            delete indexMap[recordId];
+            delete recordMap[recordId];
+        }
     }
 
     function getPendingRecord(

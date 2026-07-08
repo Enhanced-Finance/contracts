@@ -1538,6 +1538,52 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(userWithdraws[0].amount, 40 ether, "withdraw-request conversion should happen once");
     }
 
+    function testProcessQueuedUsers_ExitAllShouldWithdrawSettledAndPendingWithoutNextCycleActive() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        _depositAs(user, VAULT_HASH, 20 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        EnhancedVault.CycleRecord memory nextRec = _cycleRecord(VAULT_HASH, 3);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+
+        assertEq(fund.activePrincipal, 0, "exit-all user should have no active principal");
+        assertEq(fund.pendingActivePrincipal, 0, "pending deposits should be consumed by exit-all");
+        assertEq(fund.systemPausedPrincipal, 0, "system paused principal should be consumed by exit-all");
+        assertEq(fund.stoppedPrincipal, 120 ether, "all principal should become claimable");
+        assertEq(nextRec.totalActiveCollateral, 0, "exit-all funds should not enter the next cycle");
+        assertEq(nextRec.remainingActiveCollateral, 0, "exit-all funds should not remain allocatable");
+        assertEq(withdraws.length, 1, "exit-all should create one withdraw record");
+        assertEq(withdraws[0].amount, 120 ether, "withdraw record should include settled and pending principal");
+        assertTrue(withdraws[0].isExitAll, "withdraw record should be marked exit-all");
+
+        vm.prank(user);
+        vm.expectRevert();
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        _depositAs(user, VAULT_HASH, 1 ether);
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.pendingActivePrincipal, 1 ether, "processed exit-all should allow a fresh deposit");
+
+        vm.prank(user);
+        vault.claimWithdraw(VAULT_HASH, withdraws[0].id);
+
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.stoppedPrincipal, 0, "claim should clear the exit-all stopped principal");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "claim should not disturb the fresh deposit");
+    }
+
     function testSettleToStartWindow_ShouldFreezeFundMutationEntrypoints() external {
         _depositAs(user, VAULT_HASH, 100 ether);
         vault.seedActiveUserFund(VAULT_HASH, user, 10 ether, 1e18, 0);
