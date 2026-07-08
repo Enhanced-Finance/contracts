@@ -114,7 +114,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         bool exists;
         bool autoBuyEnabled;
         bool exitAllRequested;
-        uint256 exitAllRequestedCycleId;
     }
 
     /// @notice Full view of a user's position for a vault, with all amounts scaled to their real values.
@@ -680,11 +679,11 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         }
 
         fund.exitAllRequested = true;
-        fund.exitAllRequestedCycleId = vaults[vaultHash].currentCycleId;
+        uint256 cycleId = vaults[vaultHash].currentCycleId;
 
         _enqueueUser(vaultHash, msg.sender);
 
-        emit ExitAllRequested(vaultHash, msg.sender, fund.exitAllRequestedCycleId);
+        emit ExitAllRequested(vaultHash, msg.sender, cycleId);
     }
 
     function cancelExitAll(bytes32 vaultHash) external nonReentrant vaultExists(vaultHash) {
@@ -694,7 +693,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (!fund.exitAllRequested) revert ExitAllNotPending();
 
         fund.exitAllRequested = false;
-        fund.exitAllRequestedCycleId = 0;
 
         emit ExitAllCanceled(vaultHash, msg.sender);
     }
@@ -748,7 +746,14 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         VaultState storage st = vaults[vaultHash];
         UserFund storage fund = userFunds[vaultHash][msg.sender];
-        if ((fund.autoBuyEnabled || fund.buybackEnabled) && !fund.exitAllRequested) {
+        if (
+            (fund.autoBuyEnabled || fund.buybackEnabled)
+                && (fund.activePrincipal != 0
+                    || fund.pendingActivePrincipal != 0
+                    || fund.pendingWithdrawAmount != 0
+                    || fund.systemPausedPrincipal != 0
+                    || fund.exitAllRequested)
+        ) {
             revert AutoBuyPremiumClaimDisabled();
         }
 
@@ -799,6 +804,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.entryCumCollateral = 0;
         fund.pendingActivePrincipal = 0;
         fund.systemPausedPrincipal = 0;
+        fund.exitAllRequested = false;
         _reduceInitialAmountProRata(fund, totalAmount, totalAmount);
 
         _releaseCollateral(st, msg.sender, totalAmount);
@@ -1133,7 +1139,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.entryCumCollateral = 0;
         fund.entryCumPremium = 0;
         fund.exitAllRequested = false;
-        fund.exitAllRequestedCycleId = 0;
 
         emit ExitAllProcessed(vaultHash, user, totalExit);
 

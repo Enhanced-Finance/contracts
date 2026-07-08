@@ -200,8 +200,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             fund.buybackEnabled,
             fund.exists,
             fund.autoBuyEnabled,
-            fund.exitAllRequested,
-            fund.exitAllRequestedCycleId
+            fund.exitAllRequested
         ) = vault.userFunds(vaultHash, targetUser);
     }
 
@@ -512,7 +511,6 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
         EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
         assertTrue(fund.exitAllRequested, "exit intent should be recorded");
-        assertEq(fund.exitAllRequestedCycleId, 1, "exit cycle should be recorded");
         assertTrue(fund.autoBuyEnabled, "exit should preserve auto-buy preference");
         assertTrue(fund.buybackEnabled, "exit should preserve manual buyback preference");
         assertEq(vault.getQueueUsers(VAULT_HASH, 0, 1)[0], user, "exit user should be queued");
@@ -569,12 +567,11 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
         EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
         assertFalse(fund.exitAllRequested, "exit intent should be cleared");
-        assertEq(fund.exitAllRequestedCycleId, 0, "exit cycle should be cleared");
         assertFalse(fund.autoBuyEnabled, "auto-buy preference should retain latest user choice");
         assertTrue(fund.buybackEnabled, "manual buyback preference should retain latest user choice");
     }
 
-    function testRequestExitAll_ShouldAllowPremiumClaimWithPreservedCompoundingFlags() external {
+    function testRequestExitAll_ShouldNotAllowPremiumClaimBeforeExitProcessed() external {
         vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
         vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
         vm.startPrank(user);
@@ -582,14 +579,15 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.setBuybackEnabled(VAULT_HASH, true);
         vault.requestExitAll(VAULT_HASH);
 
+        vm.expectRevert(EnhancedVault.AutoBuyPremiumClaimDisabled.selector);
         vault.claimPremium(VAULT_HASH, 2 ether);
         vm.stopPrank();
 
         EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
         assertTrue(fund.autoBuyEnabled, "auto-buy preference should be preserved");
         assertTrue(fund.buybackEnabled, "manual buyback preference should be preserved");
-        assertEq(fund.materializedPremium, 0, "premium should be claimed");
-        assertEq(strike.balanceOf(user), 2 ether, "premium should transfer to user");
+        assertEq(fund.materializedPremium, 2 ether, "premium should remain claimable after exit processing");
+        assertEq(strike.balanceOf(user), 0, "premium should not transfer before exit processing");
     }
 
     function testProcessExitAll_ShouldConvertActiveAndPendingActiveToWithdrawable() external {
@@ -640,14 +638,26 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
         vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
 
-        vm.prank(user);
+        vm.startPrank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+        vault.setBuybackEnabled(VAULT_HASH, true);
         vault.requestExitAll(VAULT_HASH);
+        vm.stopPrank();
 
         vault.processSingleQueuedUserForTest(VAULT_HASH, user, 8e17, 5e16);
 
         EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
         assertEq(fund.materializedPremium, 7 ether, "exit should materialize final premium");
         assertEq(strike.balanceOf(user), 0, "exit processing should not transfer premium");
+
+        vm.prank(user);
+        vault.claimPremium(VAULT_HASH, 7 ether);
+
+        fund = _userFund(VAULT_HASH, user);
+        assertTrue(fund.autoBuyEnabled, "auto-buy preference should be preserved");
+        assertTrue(fund.buybackEnabled, "manual buyback preference should be preserved");
+        assertEq(fund.materializedPremium, 0, "premium should be claimable after full exit processing");
+        assertEq(strike.balanceOf(user), 7 ether, "premium should transfer after full exit processing");
     }
 
     function testProcess_ShouldConvertPauseIntoPendingWithdrawRecord() external {

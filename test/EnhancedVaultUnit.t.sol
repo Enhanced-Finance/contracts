@@ -242,8 +242,7 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
             fund.buybackEnabled,
             fund.exists,
             fund.autoBuyEnabled,
-            fund.exitAllRequested,
-            fund.exitAllRequestedCycleId
+            fund.exitAllRequested
         ) = vault.userFunds(VAULT_HASH, targetUser);
     }
 
@@ -723,6 +722,23 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.initialAmountTotal, 0, "claiming the full position should clear the cost basis");
     }
 
+    function testClaimActive_ShouldClearPendingExitIntent() external {
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 0);
+
+        vm.prank(user);
+        vault.requestExitAll(VAULT_HASH);
+
+        vault.seedCurrentCycleId(VAULT_HASH, 1);
+        vault.seedCumCollateral(VAULT_HASH, 1, 1e18);
+        vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.ENDED);
+
+        vm.prank(user);
+        vault.claimActive(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertFalse(fund.exitAllRequested, "claimActive should clear stale exit intent");
+    }
+
     function testCancelWithdraw_ShouldRemovePendingRequestAndReducePendingAmount() external {
         vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
 
@@ -830,6 +846,7 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
     }
 
     function testClaimPremium_ShouldRevert_WhenAutoBuyIsEnabled() external {
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 0);
         vault.seedMaterializedPremium(VAULT_HASH, user, 5 ether);
 
         vm.prank(user);

@@ -24,7 +24,6 @@ interface IEnhancedVault {
         bool exists;
         bool autoBuyEnabled;
         bool exitAllRequested;
-        uint256 exitAllRequestedCycleId;
     }
 
     struct UserPosition {
