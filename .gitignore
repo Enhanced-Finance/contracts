@@ -6,8 +6,6 @@ out/
 .claude
 .worktrees/
 
-lib
-
 # NPM
 .env
 node_modules
