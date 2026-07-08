@@ -113,6 +113,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         bool buybackEnabled;
         bool exists;
         bool autoBuyEnabled;
+        bool exitAllRequested;
+        uint256 exitAllRequestedCycleId;
     }
 
     /// @notice Full view of a user's position for a vault, with all amounts scaled to their real values.
@@ -124,6 +126,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 claimableSystemPaused; // systemPausedPrincipal ready to withdraw via withdraw() (collateralAsset)
         uint256 claimablePremium; // materializedPremium ready to claim via claimPremium (strikeAsset)
         uint256 projectedPremium; // claimablePremium + un-materialized accrued premium (strikeAsset)
+        bool exitAllRequested; // true when user has requested a full queued exit
     }
 
     enum FundRecordType {
@@ -287,6 +290,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     event BuybackAllocatedToUser(bytes32 indexed vaultHash, address indexed user, uint256 collateralReceived);
     event BuybackEnabledSet(bytes32 indexed vaultHash, address indexed user, bool enabled);
     event AutoBuyEnabledSet(bytes32 indexed vaultHash, address indexed user, bool enabled);
+    event ExitAllRequested(bytes32 indexed vaultHash, address indexed user, uint256 indexed cycleId);
+    event ExitAllCanceled(bytes32 indexed vaultHash, address indexed user);
+    event ExitAllProcessed(bytes32 indexed vaultHash, address indexed user, uint256 principalAmount);
     event FundRecordCreated(
         bytes32 indexed vaultHash,
         address indexed user,
@@ -363,6 +369,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     error WithdrawConversionPreviewMismatch();
     error FundNotFound();
     error AutoBuyPremiumClaimDisabled();
+    error ExitAllPending(address user);
+    error ExitAllNotPending();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Modifiers
@@ -573,9 +581,11 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (amount < st.params.minInvestmentAmount) revert BelowMinInvestment();
         if (st.totalDeposited + amount > st.params.capacity) revert CapacityExceeded();
 
+        UserFund storage fund = userFunds[vaultHash][user];
+        if (fund.exitAllRequested) revert ExitAllPending(user);
+
         // Pull collateral
         IERC20(st.params.collateralAsset).safeTransferFrom(user, address(this), amount);
-        UserFund storage fund = userFunds[vaultHash][user];
         if (!fund.exists) {
             fund.exists = true;
             fund.buybackEnabled = false;
@@ -659,6 +669,36 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         emit WithdrawRequested(vaultHash, msg.sender, recordId, amount);
     }
 
+    function requestExitAll(bytes32 vaultHash) external nonReentrant vaultExists(vaultHash) {
+        _requireActiveAndNotPaused(vaultHash);
+        _requireOpenPhase(vaultHash);
+
+        UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (fund.exitAllRequested) revert ExitAllPending(msg.sender);
+        if (fund.activePrincipal == 0 && fund.pendingActivePrincipal == 0 && fund.systemPausedPrincipal == 0) {
+            revert NotActive();
+        }
+
+        fund.exitAllRequested = true;
+        fund.exitAllRequestedCycleId = vaults[vaultHash].currentCycleId;
+
+        _enqueueUser(vaultHash, msg.sender);
+
+        emit ExitAllRequested(vaultHash, msg.sender, fund.exitAllRequestedCycleId);
+    }
+
+    function cancelExitAll(bytes32 vaultHash) external nonReentrant vaultExists(vaultHash) {
+        _requireUserWritable(vaultHash);
+
+        UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (!fund.exitAllRequested) revert ExitAllNotPending();
+
+        fund.exitAllRequested = false;
+        fund.exitAllRequestedCycleId = 0;
+
+        emit ExitAllCanceled(vaultHash, msg.sender);
+    }
+
     function cancelWithdraw(bytes32 vaultHash, uint256 recordId) external nonReentrant vaultExists(vaultHash) {
         _requireUserWritable(vaultHash);
         FundRecord memory rec = EnhancedVaultRecordsLib.getPendingRecord(
@@ -708,7 +748,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         VaultState storage st = vaults[vaultHash];
         UserFund storage fund = userFunds[vaultHash][msg.sender];
-        if (fund.autoBuyEnabled || fund.buybackEnabled) revert AutoBuyPremiumClaimDisabled();
+        if ((fund.autoBuyEnabled || fund.buybackEnabled) && !fund.exitAllRequested) {
+            revert AutoBuyPremiumClaimDisabled();
+        }
 
         uint256 settledCycleId = _settledCycleId(vaultHash);
         uint256 cycleCumPremium = cumPremium[vaultHash][settledCycleId];
@@ -828,6 +870,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         for (uint256 i; i < itemLen;) {
             UserFund storage fund = userFunds[vaultHash][users[i]];
+            if (fund.exitAllRequested) revert ExitAllPending(users[i]);
             if (!(fund.buybackEnabled || fund.autoBuyEnabled)) revert BuybackDisabled(users[i]);
             uint256 premium = _materializeProjectedPremium(fund, cycleCumPremium);
             if (premium > 0) {
@@ -1003,13 +1046,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         UserFund storage fund = userFunds[vaultHash][user];
         if (
             fund.activePrincipal == 0 && fund.pendingActivePrincipal == 0 && fund.pendingWithdrawAmount == 0
-                && fund.entryCumCollateral == 0 && fund.entryCumPremium == 0
+                && fund.systemPausedPrincipal == 0 && !fund.exitAllRequested && fund.entryCumCollateral == 0
+                && fund.entryCumPremium == 0
         ) {
             return 0;
         }
         VaultState storage st = vaults[vaultHash];
         uint256 settledActive = _projectSettledActive(fund, cycleCumCollateral);
         _materializeProjectedPremium(fund, cycleCumPremium);
+        if (fund.exitAllRequested) {
+            return _processExitAllQueuedUser(vaultHash, user, fund, settledActive);
+        }
         uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
         uint256 principalBeforeExit = settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
         _reduceInitialAmountProRata(fund, stopAmount, principalBeforeExit);
@@ -1056,6 +1103,41 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         }
 
         return int256(newActive) - int256(settledActive);
+    }
+
+    function _processExitAllQueuedUser(bytes32 vaultHash, address user, UserFund storage fund, uint256 settledActive)
+        internal
+        returns (int256 activeDelta)
+    {
+        uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
+        uint256 pendingActive = fund.pendingActivePrincipal;
+        uint256 systemPaused = fund.systemPausedPrincipal;
+        uint256 convertedPendingDeposit = _convertPendingDepositRecordsToWithdraw(vaultHash, user);
+        if (convertedPendingDeposit > pendingActive) revert InsufficientPendingAmount();
+        uint256 extraWithdrawable =
+            (settledActive - stopAmount) + (pendingActive - convertedPendingDeposit) + systemPaused;
+        if (extraWithdrawable > 0) {
+            _addPendingWithdraw(vaultHash, user, extraWithdrawable);
+        }
+
+        uint256 totalExit = settledActive + pendingActive + systemPaused;
+        _reduceInitialAmountProRata(fund, totalExit, totalExit);
+        unchecked {
+            fund.stoppedPrincipal += totalExit;
+        }
+
+        fund.activePrincipal = 0;
+        fund.pendingActivePrincipal = 0;
+        fund.pendingWithdrawAmount = 0;
+        fund.systemPausedPrincipal = 0;
+        fund.entryCumCollateral = 0;
+        fund.entryCumPremium = 0;
+        fund.exitAllRequested = false;
+        fund.exitAllRequestedCycleId = 0;
+
+        emit ExitAllProcessed(vaultHash, user, totalExit);
+
+        return -int256(settledActive);
     }
 
     function _convertPendingDepositRecordsToWithdraw(bytes32 vaultHash, address user)
@@ -1655,6 +1737,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         // Projected premium = materialized + un-materialized since last queue processing
         pos.projectedPremium = pos.claimablePremium + _projectPremium(fund, cycleCumPremium);
+        pos.exitAllRequested = fund.exitAllRequested;
     }
 
     function _buildPendingRecords(uint256[] storage ids, mapping(uint256 => FundRecord) storage records)

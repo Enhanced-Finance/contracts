@@ -241,7 +241,9 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
             fund.nextRecordId,
             fund.buybackEnabled,
             fund.exists,
-            fund.autoBuyEnabled
+            fund.autoBuyEnabled,
+            fund.exitAllRequested,
+            fund.exitAllRequestedCycleId
         ) = vault.userFunds(VAULT_HASH, targetUser);
     }
 

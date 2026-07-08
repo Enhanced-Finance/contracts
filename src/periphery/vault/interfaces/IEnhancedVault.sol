@@ -23,6 +23,8 @@ interface IEnhancedVault {
         bool buybackEnabled;
         bool exists;
         bool autoBuyEnabled;
+        bool exitAllRequested;
+        uint256 exitAllRequestedCycleId;
     }
 
     struct UserPosition {
@@ -33,6 +35,7 @@ interface IEnhancedVault {
         uint256 claimableSystemPaused;
         uint256 claimablePremium;
         uint256 projectedPremium;
+        bool exitAllRequested;
     }
 
     enum FundRecordType {
@@ -55,6 +58,8 @@ interface IEnhancedVault {
     function setVaultProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate) external;
     function pauseVault(bytes32 vaultHash) external;
     function withdraw(bytes32 vaultHash, uint256 amount) external;
+    function requestExitAll(bytes32 vaultHash) external;
+    function cancelExitAll(bytes32 vaultHash) external;
     function cancelDeposit(bytes32 vaultHash, uint256 recordId) external;
     function cancelWithdraw(bytes32 vaultHash, uint256 recordId) external;
     function claimWithdraw(bytes32 vaultHash, uint256 recordId) external;

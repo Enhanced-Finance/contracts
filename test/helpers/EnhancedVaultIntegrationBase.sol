@@ -229,7 +229,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             fund.nextRecordId,
             fund.buybackEnabled,
             fund.exists,
-            fund.autoBuyEnabled
+            fund.autoBuyEnabled,
+            fund.exitAllRequested,
+            fund.exitAllRequestedCycleId
         ) = vault.userFunds(targetVaultHash, targetUser);
     }
 

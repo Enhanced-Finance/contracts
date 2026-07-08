@@ -97,6 +97,13 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         fund.exists = true;
     }
 
+    function seedPendingActivePrincipal(bytes32 vaultHash, address user, uint256 pendingActivePrincipal) external {
+        UserFund storage fund = userFunds[vaultHash][user];
+        fund.pendingActivePrincipal = pendingActivePrincipal;
+        fund.initialAmountTotal += pendingActivePrincipal;
+        fund.exists = true;
+    }
+
     function seedActiveUserFund(
         bytes32 vaultHash,
         address user,
@@ -120,6 +127,15 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         CycleRecord storage rec = cycleRecords[vaultHash][cycleId];
         rec.totalActiveCollateral = totalActiveCollateral;
         rec.remainingActiveCollateral = remainingActiveCollateral;
+    }
+
+    function processSingleQueuedUserForTest(
+        bytes32 vaultHash,
+        address user,
+        uint256 cycleCumCollateral,
+        uint256 cycleCumPremium
+    ) external returns (int256 activeDelta) {
+        return _processSingleQueuedUser(vaultHash, user, cycleCumCollateral, cycleCumPremium);
     }
 }
 
@@ -183,7 +199,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             fund.nextRecordId,
             fund.buybackEnabled,
             fund.exists,
-            fund.autoBuyEnabled
+            fund.autoBuyEnabled,
+            fund.exitAllRequested,
+            fund.exitAllRequestedCycleId
         ) = vault.userFunds(vaultHash, targetUser);
     }
 
@@ -481,6 +499,155 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.activePrincipal, 60 ether, "withdraw amount should be removed from active");
         assertEq(fund.stoppedPrincipal, 40 ether, "paused amount should move to stopped");
         assertEq(fund.pendingWithdrawAmount, 0, "pending stop should be consumed");
+    }
+
+    function testRequestExitAll_ShouldPreserveModesAndExposePendingExit() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vm.startPrank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vault.requestExitAll(VAULT_HASH);
+        vm.stopPrank();
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertTrue(fund.exitAllRequested, "exit intent should be recorded");
+        assertEq(fund.exitAllRequestedCycleId, 1, "exit cycle should be recorded");
+        assertTrue(fund.autoBuyEnabled, "exit should preserve auto-buy preference");
+        assertTrue(fund.buybackEnabled, "exit should preserve manual buyback preference");
+        assertEq(vault.getQueueUsers(VAULT_HASH, 0, 1)[0], user, "exit user should be queued");
+    }
+
+    function testRequestExitAll_ShouldBlockBuybackAndAllowPreferenceUpdates() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 10 ether);
+        vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(5 ether)));
+        vm.startPrank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+        vault.requestExitAll(VAULT_HASH);
+
+        vault.setAutoBuyEnabled(VAULT_HASH, false);
+        vault.setBuybackEnabled(VAULT_HASH, false);
+        vm.stopPrank();
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertFalse(fund.autoBuyEnabled, "exit should allow user to update auto-buy preference");
+        assertFalse(fund.buybackEnabled, "exit should allow user to update manual buyback preference");
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+        EnhancedVault.SwapParams memory swapParams = EnhancedVault.SwapParams({
+            amountIn: 1 ether, amountOutMinimum: 1, deadline: block.timestamp + 1, fee: 3000
+        });
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(EnhancedVault.ExitAllPending.selector, user));
+        vault.buyback(VAULT_HASH, users, swapParams);
+    }
+
+    function testRequestExitAll_ShouldBlockNewDepositsUntilCanceled() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+
+        vm.startPrank(user);
+        vault.requestExitAll(VAULT_HASH);
+
+        vm.expectRevert(abi.encodeWithSelector(EnhancedVault.ExitAllPending.selector, user));
+        vault.deposit(VAULT_HASH, 1 ether);
+        vm.stopPrank();
+    }
+
+    function testCancelExitAll_ShouldOnlyClearExitIntent() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vm.startPrank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vault.requestExitAll(VAULT_HASH);
+        vault.setAutoBuyEnabled(VAULT_HASH, false);
+        vault.cancelExitAll(VAULT_HASH);
+        vm.stopPrank();
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertFalse(fund.exitAllRequested, "exit intent should be cleared");
+        assertEq(fund.exitAllRequestedCycleId, 0, "exit cycle should be cleared");
+        assertFalse(fund.autoBuyEnabled, "auto-buy preference should retain latest user choice");
+        assertTrue(fund.buybackEnabled, "manual buyback preference should retain latest user choice");
+    }
+
+    function testRequestExitAll_ShouldAllowPremiumClaimWithPreservedCompoundingFlags() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
+        vm.startPrank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+        vault.requestExitAll(VAULT_HASH);
+
+        vault.claimPremium(VAULT_HASH, 2 ether);
+        vm.stopPrank();
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertTrue(fund.autoBuyEnabled, "auto-buy preference should be preserved");
+        assertTrue(fund.buybackEnabled, "manual buyback preference should be preserved");
+        assertEq(fund.materializedPremium, 0, "premium should be claimed");
+        assertEq(strike.balanceOf(user), 2 ether, "premium should transfer to user");
+    }
+
+    function testProcessExitAll_ShouldConvertActiveAndPendingActiveToWithdrawable() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vault.seedPendingActivePrincipal(VAULT_HASH, user, 7 ether);
+        vault.seedCycleRecord(VAULT_HASH, 1, 100 ether, 80 ether);
+
+        vm.prank(user);
+        vault.requestExitAll(VAULT_HASH);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+        assertFalse(fund.exitAllRequested, "exit intent should be cleared after processing");
+        assertEq(fund.activePrincipal, 0, "active should be cleared");
+        assertEq(fund.pendingActivePrincipal, 0, "pending active should be cleared");
+        assertEq(fund.stoppedPrincipal, 87 ether, "settled active plus pending active should become claimable");
+        assertEq(withdraws.length, 1, "exit should create a withdraw record");
+        assertEq(withdraws[0].amount, 87 ether, "withdraw record should include active and pending active");
+    }
+
+    function testProcessExitAll_ShouldConsumeExistingPartialWithdrawRequests() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 100 ether, 80 ether);
+
+        vm.startPrank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+        vault.requestExitAll(VAULT_HASH);
+        vm.stopPrank();
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.FundRecord[] memory requests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(requests.length, 0, "exit should consume old withdraw requests");
+        assertEq(fund.stoppedPrincipal, 80 ether, "all settled active should become claimable");
+        assertEq(withdraws.length, 2, "old request and exit remainder should both be withdraw records");
+        assertEq(withdraws[0].amount + withdraws[1].amount, 80 ether, "withdraw records should sum to full exit");
+    }
+
+    function testProcessExitAll_ShouldMaterializePremiumWithoutClaimingIt() external {
+        vault.seedActiveUserFund(VAULT_HASH, user, 100 ether, 1e18, 0);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
+
+        vm.prank(user);
+        vault.requestExitAll(VAULT_HASH);
+
+        vault.processSingleQueuedUserForTest(VAULT_HASH, user, 8e17, 5e16);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.materializedPremium, 7 ether, "exit should materialize final premium");
+        assertEq(strike.balanceOf(user), 0, "exit processing should not transfer premium");
     }
 
     function testProcess_ShouldConvertPauseIntoPendingWithdrawRecord() external {
