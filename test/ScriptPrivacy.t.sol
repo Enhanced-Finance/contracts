@@ -33,6 +33,7 @@ contract ScriptPrivacyTest is Test {
         scriptPaths.push("script/EnhancedOptions/Ingresso/IngressoReleaseCollateralToCustody.s.sol");
         scriptPaths.push("script/EnhancedOptions/Ingresso/IngressoDepositAndOpen.s.sol");
         scriptPaths.push("script/EnhancedOptions/Ingresso/IngressoMMarketDeposit.s.sol");
+        scriptPaths.push("script/Oracle/SetLockingPeriod.s.sol");
 
         forbiddenLiterals.push("0x62636cc6f993b3d3f0b9eedb473ce0bc98695e5bd02e667fa6b3552c5f5b7c29");
         forbiddenLiterals.push("0x9832d172f61a4ac7cca7bad266a425d65bcb8fb83a3d195c378972572c5f2c3b");
@@ -50,6 +51,7 @@ contract ScriptPrivacyTest is Test {
         forbiddenLiterals.push("0xFfFFFFff00000000000000000000000000000001");
         forbiddenLiterals.push("0xD157F637262B0E6Af035baa35a5475E56b100D1b");
         forbiddenLiterals.push("0x5cc75d8c5D9A22AC35D7cb734159b2Da5554981f");
+        forbiddenLiterals.push("0x591e577E688f0Ec1F93B9Cc6E31D16472807aE8d");
         forbiddenLiterals.push("0x483688fb8fe19cbf746438ed4571d7075eeabf0f");
         forbiddenLiterals.push("0xea2d8c2c17a36eaa77765505b325e0c8b0918057");
     }
