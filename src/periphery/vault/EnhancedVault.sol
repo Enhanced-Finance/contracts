@@ -1688,6 +1688,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         // Pending amounts (no scaling — not yet active)
         pos.pendingDeposit = fund.pendingActivePrincipal;
         pos.pendingWithdrawAmount = fund.pendingWithdrawAmount;
+        if (pendingExitAllRequestId[vaultHash][user] != 0) pos.pendingWithdrawAmount = pos.activeBalance;
 
         // Already-claimable collateral amounts
         pos.claimableWithdraw = fund.stoppedPrincipal;
