@@ -350,9 +350,6 @@ contract ControllerLogic is Initializable, OwnableUpgradeable, ReentrancyGuardTr
                 // check put is ITM
                 require(underlyingExpiryPrice < strikePrice, "C45");
                 // take the underlying asset payment
-                // _removeExcessCollateralFromRedemptionBalances(
-                //     otoken, strikePrice, underlyingExpiryPrice, collateralExpiryPrice
-                // );
                 pool.transferToPool(otoken.underlyingAsset(), _args.payer, strikePayment);
             } else {
                 // check call is ITM
