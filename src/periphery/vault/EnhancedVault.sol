@@ -144,7 +144,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     struct TransitionQueue {
         address[] users;
-        uint256 queueLenSnapshot;
+        uint256 queueLenSnapshot; // logical queue length in OPEN; frozen length after settlement
         uint256 processedCount;
         uint256 queueCycleId;
     }
@@ -1496,7 +1496,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         TransitionQueue storage queue = _transitionQueues[vaultHash];
-        queue.queueLenSnapshot = queue.users.length;
         queue.processedCount = 0;
         queue.queueCycleId = cycleId;
         vaultPhases[vaultHash] = queue.queueLenSnapshot == 0 ? CyclePhase.PROCESSING_DONE : CyclePhase.SETTLED;
@@ -1524,10 +1523,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         delete _cycleAdvanceStates[vaultHash];
-        delete queue.users;
         queue.queueLenSnapshot = 0;
         queue.processedCount = 0;
-        queue.queueCycleId = 0;
 
         vaultPhases[vaultHash] = CyclePhase.OPEN;
     }
@@ -1632,7 +1629,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     {
         TransitionQueue storage queue = _transitionQueues[vaultHash];
         phase = vaultPhases[vaultHash];
-        queueLen = phase == CyclePhase.OPEN ? queue.users.length : queue.queueLenSnapshot;
+        queueLen = queue.queueLenSnapshot;
         processedCount = queue.processedCount;
         remaining = queueLen > processedCount ? queueLen - processedCount : 0;
         canStartNextCycle = phase == CyclePhase.PROCESSING_DONE && remaining == 0;
@@ -1640,7 +1637,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     function getQueueUsers(bytes32 vaultHash, uint256 offset, uint256 limit) external view returns (address[] memory) {
         TransitionQueue storage queue = _transitionQueues[vaultHash];
-        uint256 len = queue.users.length;
+        uint256 len = queue.queueLenSnapshot;
         if (offset >= len || limit == 0) return new address[](0);
 
         uint256 end = offset + limit;
@@ -1768,7 +1765,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     function _enqueueUser(bytes32 vaultHash, address user) internal {
         if (queued[vaultHash][user]) return;
         queued[vaultHash][user] = true;
-        _transitionQueues[vaultHash].users.push(user);
+
+        TransitionQueue storage queue = _transitionQueues[vaultHash];
+        uint256 index = queue.queueLenSnapshot;
+        if (index < queue.users.length) {
+            queue.users[index] = user;
+        } else {
+            queue.users.push(user);
+        }
+        unchecked {
+            queue.queueLenSnapshot = index + 1;
+        }
         // emit UserQueued(vaultHash, user);
     }
 }
