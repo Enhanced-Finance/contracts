@@ -387,7 +387,7 @@ contract EnhancedOptions is
         if (actions[0].secondAddress != expectedReceiver) revert RedeemReceiverInvalid();
         if (operations[0].amount1 != actions[0].amount) revert RedeemAmountMustBeWithdrawAmount();
         if (operations[0].user2 != address(this)) revert InvalidWithdrawRecipient();
-        _revertIfOutstandingCustody(operations[0].user1);
+        _revertIfMakerOtokenHasOutstandingCustody(operations[0].user1, actions[0].asset);
         mmarket.operate(operations);
         controller.operate(actions);
     }
@@ -398,7 +398,7 @@ contract EnhancedOptions is
         for (uint256 i = 0; i < len; i++) {
             if (actions[i].actionType != Actions.ActionType.SettleVault) revert InvalidActionsArray();
             if (actions[i].secondAddress != actions[i].owner) revert SettleReceiverMustBeVaultOwner();
-            _revertIfOutstandingCustody(actions[i].owner);
+            _revertIfVaultHasOutstandingCustody(actions[i].owner, actions[i].vaultId);
         }
         controller.operate(actions);
     }
@@ -959,13 +959,25 @@ contract EnhancedOptions is
         return keccak256(abi.encodePacked(hashes));
     }
 
-    function _revertIfOutstandingCustody(address owner) internal view {
-        uint256[] storage vaultIds = vaultsWithOutstandingRelease[owner];
+    function _revertIfMakerOtokenHasOutstandingCustody(address maker, address otoken) internal view {
+        address vaultOwner = OtokenInterface(otoken).vaultOwner();
+        uint256[] storage vaultIds = vaultsWithOutstandingRelease[vaultOwner];
         uint256 len = vaultIds.length;
         for (uint256 i = 0; i < len; i++) {
-            if (vaultCustodyReleases[owner][vaultIds[i]].outstandingAmount != 0) {
+            uint256 vaultId = vaultIds[i];
+            if (vaultMakers[vaultOwner][vaultId] != maker) continue;
+            if (vaultCustodyReleases[vaultOwner][vaultId].outstandingAmount == 0) continue;
+
+            (MarginVault.Vault memory vault,,) = controller.getVaultWithDetails(vaultOwner, vaultId);
+            if (vault.shortOtokens.length != 0 && vault.shortOtokens[0] == otoken) {
                 revert OutstandingCustodyRelease();
             }
+        }
+    }
+
+    function _revertIfVaultHasOutstandingCustody(address owner, uint256 vaultId) internal view {
+        if (vaultCustodyReleases[owner][vaultId].outstandingAmount != 0) {
+            revert OutstandingCustodyRelease();
         }
     }
 
