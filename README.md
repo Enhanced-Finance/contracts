@@ -1,33 +1,26 @@
-# Enhanced EVM Options & Strategy
+# Enhanced Protocol Contracts
 
-Language: **English**
+This repository contains 2 main contracts:
 
-This repository contains an EVM options protocol with two product lines:
-- **Options**: execution gateway for option lifecycle (`src/core/EnhancedOptions.sol`)
-- **Strategy**: cycle-based strategy vault with NFT fund positions (`src/periphery/strategy/EnhancedStrategy.sol`)
+- [`EnhancedOptions`](src/core/EnhancedOptions.sol) execution gateway for option lifecycle.
+- [`EnhancedVault`](src/periphery/vault/EnhancedVault.sol) runs cycle-based option vaults with queued deposits and withdrawals, premium distribution, optional premium buyback, and operator-driven order execution.
 
-## Current status
 
-- OTC is intentionally disabled (`revert("not support")`).
-- Flash-loan redeem is intentionally disabled (`revert("not support")`).
-- Trusted position path is restricted by `taker == msg.sender`.
+## Development
 
-## Quick start
+Requirements: [Foundry](https://book.getfoundry.sh/) and Git.
 
 ```bash
 forge install
+git submodule update --init --recursive
 forge build --via-ir
+forge test
+forge fmt --check
 ```
 
-## Common commands
+The compiler and optimizer configuration is in [`foundry.toml`](foundry.toml). The project currently targets Solidity `0.8.28` and builds with IR enabled.
 
-```bash
-make upgrade_enhanced_strategy
-```
-
-## Documentation
-
-- English docs: [`docs/en`](./docs/en/00-docs-index.md)
+For deployment or upgrades, use the scripts under [`script`](script) and the targets in [`Makefile`](Makefile). 
 
 ## License
 
