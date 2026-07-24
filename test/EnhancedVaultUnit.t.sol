@@ -7,6 +7,8 @@ import {EnhancedVault} from "../src/periphery/vault/EnhancedVault.sol";
 import {EnhancedVaultRecordsLib} from "../src/periphery/vault/libs/EnhancedVaultRecordsLib.sol";
 import {IEnhancedOptions} from "../src/core/interfaces/IEnhancedOptions.sol";
 import {ISwapRouter} from "../src/core/interfaces/ISwapRouter.sol";
+import {Actions} from "../src/core/libs/Actions.sol";
+import {Parser} from "../src/core/libs/Parser.sol";
 import {EnhancedVaultLinkedLibraries} from "./helpers/EnhancedVaultLinkedLibraries.sol";
 
 contract MockERC20ForVaultUnit is ERC20 {
@@ -43,6 +45,47 @@ contract MockSwapRouterForVaultUnit is ISwapRouter {
     }
 }
 
+contract MockEnhancedOptionsForVaultUnit {
+    address public marginPool;
+    uint256 public nextVaultId = 1;
+    uint256 public nextPremium = 1 ether;
+
+    function setMarginPool(address newMarginPool) external {
+        marginPool = newMarginPool;
+    }
+
+    function setPositionResult(uint256 vaultId, uint256 premium) external {
+        nextVaultId = vaultId;
+        nextPremium = premium;
+    }
+
+    function ingressoNewTrustedTakerPosition(bytes calldata)
+        external
+        view
+        returns (uint256 vaultId, uint256 totalPremium)
+    {
+        return (nextVaultId, nextPremium);
+    }
+
+    function ingressoNewTrustedTakerAndMakerPosition(bytes calldata)
+        external
+        view
+        returns (uint256 vaultId, uint256 totalPremium)
+    {
+        return (nextVaultId, nextPremium);
+    }
+
+    function ingressoSettle(Actions.ActionArgs[] memory) external {}
+}
+
+contract MockVaultSignerForVaultUnit {
+    bytes4 internal constant ERC1271_MAGIC_VALUE = 0x1626ba7e;
+
+    function isValidSignature(bytes32, bytes calldata) external pure returns (bytes4) {
+        return ERC1271_MAGIC_VALUE;
+    }
+}
+
 contract EnhancedVaultUnitHarness is EnhancedVault {
     function seedOwner(address newOwner) external {
         _transferOwnership(newOwner);
@@ -64,7 +107,8 @@ contract EnhancedVaultUnitHarness is EnhancedVault {
         uint256 minPrincipalRatio,
         int256 buybackPriceRatio,
         bool isActive,
-        uint256 currentCycleId
+        uint256 currentCycleId,
+        uint256 protocolFeeRate
     ) external {
         VaultState storage st = vaults[vaultHash];
         st.params.cycleDuration = 1 days;
@@ -77,6 +121,7 @@ contract EnhancedVaultUnitHarness is EnhancedVault {
         st.params.strikePriceBps = strikePriceBps;
         st.params.minPrincipalRatio = minPrincipalRatio;
         st.params.buybackPriceRatio = buybackPriceRatio;
+        st.protocolFeeRate = protocolFeeRate;
         st.isActive = isActive;
         st.isPaused = false;
         st.isEnd = false;
@@ -118,6 +163,15 @@ contract EnhancedVaultUnitHarness is EnhancedVault {
         rec.remainingActiveCollateral = remainingActiveCollateral;
     }
 
+    function seedSystemPausedPrincipalWithBasis(bytes32 vaultHash, address user, uint256 amount, uint256 basis)
+        external
+    {
+        UserFund storage fund = userFunds[vaultHash][user];
+        fund.systemPausedPrincipal = amount;
+        fund.initialAmountTotal = basis;
+        fund.exists = true;
+    }
+
     function seedMaterializedPremium(bytes32 vaultHash, address user, uint256 premium) external {
         UserFund storage fund = userFunds[vaultHash][user];
         fund.materializedPremium = premium;
@@ -144,6 +198,10 @@ contract EnhancedVaultUnitHarness is EnhancedVault {
     function seedCurrentCycleId(bytes32 vaultHash, uint256 cycleId) external {
         vaults[vaultHash].currentCycleId = cycleId;
     }
+
+    function seedProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate) external {
+        vaults[vaultHash].protocolFeeRate = protocolFeeRate;
+    }
 }
 
 contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
@@ -151,6 +209,7 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
     bytes32 internal constant DEPOSITED_EVENT = keccak256("Deposited(bytes32,address,uint256,uint256)");
     bytes32 internal constant WITHDRAW_REQUESTED_EVENT =
         keccak256("WithdrawRequested(bytes32,address,uint256,uint256)");
+    bytes32 internal constant AUTO_BUY_ENABLED_SET_EVENT = keccak256("AutoBuyEnabledSet(bytes32,address,bool)");
     bytes4 internal constant BUYBACK_DISABLED_SELECTOR = bytes4(keccak256("BuybackDisabled(address)"));
 
     uint256 internal constant OWNER_PK = 0xA11CE;
@@ -158,35 +217,41 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
     uint256 internal constant USER_PK = 0xCAFE;
     uint256 internal constant HEALTHY_USER_PK = 0xD00D;
     uint256 internal constant VIOLATING_USER_PK = 0xD0D0;
+    address internal constant PARSER_LIBRARY_PLACEHOLDER = 0x848368Aa602C0634900992CBB3fD7B1E040080c0;
 
     EnhancedVaultUnitHarness internal vault;
     MockERC20ForVaultUnit internal collateral;
     MockERC20ForVaultUnit internal strike;
+    MockEnhancedOptionsForVaultUnit internal options;
 
     address internal owner;
     address internal operator;
     address internal user;
     address internal healthyUser;
     address internal violatingUser;
+    address internal vaultSigner;
 
     function setUp() external {
         _etchEnhancedVaultLibraries();
+        vm.etch(PARSER_LIBRARY_PLACEHOLDER, type(Parser).runtimeCode);
 
         owner = vm.addr(OWNER_PK);
         operator = vm.addr(OPERATOR_PK);
         user = vm.addr(USER_PK);
         healthyUser = vm.addr(HEALTHY_USER_PK);
         violatingUser = vm.addr(VIOLATING_USER_PK);
+        vaultSigner = address(new MockVaultSignerForVaultUnit());
 
         vault = new EnhancedVaultUnitHarness();
         vault.seedOwner(owner);
-        vault.seedCore(address(0x1111), operator, address(0x2222));
+        options = new MockEnhancedOptionsForVaultUnit();
+        vault.seedCore(address(options), operator, vaultSigner);
 
         collateral = new MockERC20ForVaultUnit("Collateral", "COL");
         strike = new MockERC20ForVaultUnit("Strike", "USD");
 
         vault.seedVault(
-            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 8_000, -1_250, true, 1
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 8_000, -1_250, true, 1, 0
         );
 
         collateral.mint(user, 1_000_000 ether);
@@ -216,7 +281,43 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
             fund.initialAmountTotal,
             fund.nextRecordId,
             fund.buybackEnabled,
+            fund.exists,
+            fund.autoBuyEnabled
         ) = vault.userFunds(VAULT_HASH, targetUser);
+    }
+
+    function _vaultState() internal view returns (EnhancedVault.VaultState memory st) {
+        (
+            EnhancedVault.VaultParams memory params,
+            bool isActive,
+            uint256 currentCycleId,
+            uint256 currentCycleStart,
+            uint256 totalDeposited,
+            bool isPaused,
+            bool isEnd,
+            uint256 protocolFeeRate
+        ) = vault.vaults(VAULT_HASH);
+
+        st = EnhancedVault.VaultState({
+            params: params,
+            isActive: isActive,
+            currentCycleId: currentCycleId,
+            currentCycleStart: currentCycleStart,
+            totalDeposited: totalDeposited,
+            isPaused: isPaused,
+            isEnd: isEnd,
+            protocolFeeRate: protocolFeeRate
+        });
+    }
+
+    function _cycleRecord(uint256 cycleId) internal view returns (EnhancedVault.CycleRecord memory rec) {
+        (
+            rec.totalActiveCollateral,
+            rec.remainingActiveCollateral,
+            rec.totalPremium,
+            rec.collateralRatio,
+            rec.premiumRatio
+        ) = vault.cycleRecords(VAULT_HASH, cycleId);
     }
 
     function testWithdraw_ShouldRevertWhenPendingExitRecordLimitIsReached() external {
@@ -245,6 +346,108 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vault.withdraw(VAULT_HASH, 1 ether);
     }
 
+    function testProtocolFeeRate_ShouldDefaultToZeroInVaultState() external {
+        assertEq(_vaultState().protocolFeeRate, 0, "new vault should default protocol fee rate to zero");
+    }
+
+    function testProtocolFeeRecipient_ShouldBeQueryableAfterOwnerUpdate() external {
+        vm.prank(owner);
+        vault.setProtocolFeeRecipient(healthyUser);
+
+        assertEq(vault.protocolFeeRecipient(), healthyUser, "recipient should be publicly queryable");
+    }
+
+    function testProtocolFee_ShouldReduceCollateralRatioAndNextActiveCollateral() external {
+        vault.seedProtocolFeeRate(VAULT_HASH, 100_000);
+        _depositAs(user, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.CycleRecord memory settled = _cycleRecord(2);
+        EnhancedVault.CycleRecord memory nextRec = _cycleRecord(3);
+        EnhancedVault.UserPosition memory pos = vault.getMyPosition(VAULT_HASH, user);
+
+        assertEq(vault.protocolFeeAccrued(VAULT_HASH), 1 ether, "fee should accrue from cycle-start active TVL");
+        assertEq(settled.collateralRatio, 99e16, "fee should reduce user collateral ratio");
+        assertEq(nextRec.totalActiveCollateral, 99 ether, "next active should use net collateral after fee");
+        assertEq(nextRec.remainingActiveCollateral, 99 ether, "next remaining should use net collateral after fee");
+        assertEq(pos.activeBalance, 99 ether, "projected active balance should reflect protocol fee");
+        assertEq(_vaultState().totalDeposited, 99 ether, "capacity accounting should remove fee from user TVL");
+    }
+
+    function testProtocolFee_ShouldCapAtGrossCollateralAfterSettle() external {
+        vault.seedProtocolFeeRate(VAULT_HASH, 10_000_000);
+        vault.seedCycleRecord(VAULT_HASH, 1, 100 ether, 5 ether / 10);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.CycleRecord memory settled = _cycleRecord(1);
+        EnhancedVault.CycleRecord memory nextRec = _cycleRecord(2);
+
+        assertEq(vault.protocolFeeAccrued(VAULT_HASH), 5 ether / 10, "fee should cap at gross collateral");
+        assertEq(settled.collateralRatio, 0, "capped fee can reduce collateral ratio to zero");
+        assertEq(nextRec.totalActiveCollateral, 0, "no user principal should remain after capped fee");
+    }
+
+    function testClaimProtocolFees_ShouldTransferAccruedCollateralWithoutReducingTotalDepositedAgain() external {
+        vault.seedProtocolFeeRate(VAULT_HASH, 100_000);
+        _depositAs(user, 100 ether);
+
+        vm.prank(owner);
+        vault.setProtocolFeeRecipient(healthyUser);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        uint256 totalDepositedBeforeClaim = _vaultState().totalDeposited;
+        uint256 recipientBefore = collateral.balanceOf(healthyUser);
+
+        vm.prank(healthyUser);
+        vault.claimProtocolFees(VAULT_HASH);
+
+        assertEq(collateral.balanceOf(healthyUser) - recipientBefore, 1 ether, "recipient should receive accrued fee");
+        assertEq(vault.protocolFeeAccrued(VAULT_HASH), 0, "claim should clear accrued fee");
+        assertEq(_vaultState().totalDeposited, totalDepositedBeforeClaim, "claim should not reduce TVL twice");
+    }
+
+    function testBuyback_ShouldIncreaseTotalDepositedEvenWhenCapacityIsExceeded() external {
+        MockSwapRouterForVaultUnit router = new MockSwapRouterForVaultUnit(2 ether);
+        vault.seedSwapRouter(address(router));
+        _depositAs(user, 1 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 1 ether, 0, 8_000, -1_250, true, 1, 0);
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vm.prank(operator);
+        vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+
+        (,,,, uint256 totalDeposited,,,) = vault.vaults(VAULT_HASH);
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(totalDeposited, 3 ether, "buyback output should increase total deposited beyond capacity");
+        assertEq(fund.initialAmountTotal, 1 ether, "buyback should not increase the user's initial principal basis");
+    }
+
+    function testClaimProtocolFees_ShouldRevertForUnauthorizedCaller() external {
+        vm.prank(user);
+        vm.expectRevert();
+        vault.claimProtocolFees(VAULT_HASH);
+    }
+
     function testDeposit_ShouldCreateFirstPendingDepositRecord() external {
         _depositAs(user, 10 ether);
 
@@ -262,7 +465,7 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.nextRecordId, 2, "later deposits should keep incrementing record ids");
     }
 
-    function testWithdraw_ShouldDeferQueueInSettledPhaseWhenUserMissedSnapshot() external {
+    function testWithdraw_ShouldRevertInSettledPhase() external {
         vault.seedUserFundState(VAULT_HASH, user, 10 ether, 10 ether, 1e18, 0);
         vault.seedCycleRecord(VAULT_HASH, 1, 10 ether, 10 ether);
 
@@ -270,24 +473,14 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.settlePreviousCycle(VAULT_HASH);
 
-        // Re-enter the settled branch after real settlePreviousCycle initialized the private advance state.
         vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.SETTLED);
 
         vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
         vault.withdraw(VAULT_HASH, 1 ether);
-
-        assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10).length, 0, "missed settled snapshot should defer queueing");
-
-        vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.PROCESSING_DONE);
-        vm.prank(operator);
-        vault.startNextCycle(VAULT_HASH);
-
-        address[] memory queuedUsers = vault.getQueueUsers(VAULT_HASH, 0, 10);
-        assertEq(queuedUsers.length, 1, "deferred user should be enqueued after next cycle starts");
-        assertEq(queuedUsers[0], user, "deferred queue user mismatch");
     }
 
-    function testWithdraw_ShouldDeferQueueInProcessingDonePhase() external {
+    function testWithdraw_ShouldRevertInProcessingDonePhase() external {
         vault.seedUserFundState(VAULT_HASH, user, 10 ether, 10 ether, 1e18, 0);
         vault.seedCycleRecord(VAULT_HASH, 1, 10 ether, 10 ether);
 
@@ -296,16 +489,8 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vault.settlePreviousCycle(VAULT_HASH);
 
         vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
         vault.withdraw(VAULT_HASH, 1 ether);
-
-        assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10).length, 0, "processing-done withdraw should defer queueing");
-
-        vm.prank(operator);
-        vault.startNextCycle(VAULT_HASH);
-
-        address[] memory queuedUsers = vault.getQueueUsers(VAULT_HASH, 0, 10);
-        assertEq(queuedUsers.length, 1, "deferred user should be queued for the reopened cycle");
-        assertEq(queuedUsers[0], user, "deferred queue user mismatch");
     }
 
     function testSystemPauseFunds_ShouldRevertForHealthyUser() external {
@@ -352,6 +537,9 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         _depositAs(user, 1 ether);
         vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
 
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
         vm.prank(operator);
         vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
 
@@ -361,11 +549,31 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(vault.getQueueUsers(VAULT_HASH, 0, 10)[0], user, "buyback user should be queued");
     }
 
-    function testDeposit_ShouldDefaultNewUserFundToBuybackEnabled() external {
+    function testBuyback_ShouldMaterializeProjectedPremiumBeforeAvailabilityCheck() external {
+        MockSwapRouterForVaultUnit router = new MockSwapRouterForVaultUnit(1 ether);
+        vault.seedSwapRouter(address(router));
+        vault.seedCurrentCycleId(VAULT_HASH, 2);
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 1e16);
+        vault.seedCumPremium(VAULT_HASH, 1, 3e16);
+
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+
+        vm.prank(operator);
+        vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.materializedPremium, 1 ether, "buyback should materialize projected premium then spend");
+        assertEq(fund.entryCumPremium, 3e16, "buyback should advance premium checkpoint after materializing");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "buyback output should land in pending active");
+    }
+
+    function testDeposit_ShouldDefaultNewUserFundToManualBuybackDisabledAndAutoBuyEnabled() external {
         _depositAs(user, 1 ether);
 
         EnhancedVault.UserFund memory fund = _userFund(user);
-        assertTrue(fund.buybackEnabled, "first fund creation should default buyback on");
+        assertFalse(fund.buybackEnabled, "first fund creation should default manual buyback off");
+        assertTrue(fund.autoBuyEnabled, "first fund creation should default auto-buy on");
     }
 
     function testDeposit_ShouldNotOverrideExplicitBuybackOptOut() external {
@@ -389,6 +597,57 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(BUYBACK_DISABLED_SELECTOR, user));
         vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+    }
+
+    function testSetAutoBuyEnabled_ShouldRevertWhenFundMissing() external {
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.FundNotFound.selector);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+    }
+
+    function testSetAutoBuyEnabled_ShouldAllowUserToToggleAndEmitEvent() external {
+        _depositAs(user, 1 ether);
+
+        vm.recordLogs();
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        Vm.Log memory log = _findLog(vm.getRecordedLogs(), AUTO_BUY_ENABLED_SET_EVENT);
+        assertEq(log.emitter, address(vault), "unexpected auto-buy event emitter");
+        assertEq(log.topics.length, 3, "auto-buy event topic count mismatch");
+        assertEq(log.topics[1], VAULT_HASH, "auto-buy event vaultHash mismatch");
+        assertEq(address(uint160(uint256(log.topics[2]))), user, "auto-buy event user mismatch");
+        bool enabled = abi.decode(log.data, (bool));
+        assertTrue(enabled, "auto-buy event enabled mismatch");
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertFalse(fund.buybackEnabled, "auto-buy should not mutate manual buyback");
+        assertTrue(fund.autoBuyEnabled, "auto-buy should be enabled");
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, false);
+
+        fund = _userFund(user);
+        assertFalse(fund.buybackEnabled, "auto-buy disable should not mutate manual buyback");
+        assertFalse(fund.autoBuyEnabled, "auto-buy should be disabled");
+    }
+
+    function testBuyback_ShouldAllowAutoBuyWhenManualBuybackDisabled() external {
+        MockSwapRouterForVaultUnit router = new MockSwapRouterForVaultUnit(1 ether);
+        vault.seedSwapRouter(address(router));
+        vault.seedMaterializedPremium(VAULT_HASH, user, 2 ether);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        vm.prank(operator);
+        vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertFalse(fund.buybackEnabled, "manual buyback should remain disabled");
+        assertTrue(fund.autoBuyEnabled, "auto-buy should remain enabled");
+        assertEq(fund.materializedPremium, 1 ether, "auto-buy should deduct spent premium");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "auto-buy output should land in pending active");
     }
 
     function testSetBuybackEnabled_ShouldAllowUserToOptInBeforeOperatorBuyback() external {
@@ -422,9 +681,76 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         vault.buyback(VAULT_HASH, _users(user), _swapParams(1 ether));
     }
 
-    function testClaimWithdraw_ShouldReduceStoppedPrincipalAndTransferCollateral() external {
+    function testWithdraw_ShouldAllowRequest_WhenAutoBuyIsEnabled() external {
+        vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 7 ether);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        assertEq(fund.pendingWithdrawAmount, 7 ether, "auto-buy should not block principal withdraw requests");
+        assertEq(withdraws.length, 1, "withdraw request should be recorded");
+        assertEq(withdraws[0].amount, 7 ether, "withdraw request amount mismatch");
+    }
+
+    function testWithdrawExitAll_ShouldCreateMarkedZeroAmountRequestAndBlockNewFundWrites() external {
+        vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        EnhancedVault.FundRecord[] memory requests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        assertEq(requests.length, 1, "exit-all request should be recorded");
+        assertEq(requests[0].amount, 0, "exit-all request amount is resolved during queue processing");
+        assertTrue(requests[0].isExitAll, "exit-all request should be marked");
+
+        vm.prank(user);
+        vm.expectRevert();
+        vault.deposit(VAULT_HASH, 1 ether);
+
+        vm.prank(user);
+        vm.expectRevert();
+        vault.withdraw(VAULT_HASH, 1 ether);
+    }
+
+    function testWithdrawExitAll_ShouldValidateAmountAndCancelThroughCancelWithdraw() external {
+        vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.ZeroAmount.selector);
+        vault.withdraw(VAULT_HASH, 1 ether, true);
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.ZeroAmount.selector);
+        vault.withdraw(VAULT_HASH, 0, false);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        EnhancedVault.FundRecord[] memory requests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        vm.prank(user);
+        vault.cancelWithdraw(VAULT_HASH, requests[0].id);
+
+        assertEq(vault.getPendingWithdrawRequests(VAULT_HASH, user).length, 0, "cancel should remove exit-all request");
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        requests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        assertEq(requests.length, 1, "normal withdraw should be allowed after cancel");
+        assertFalse(requests[0].isExitAll, "normal withdraw should not be marked exit-all");
+    }
+
+    function testClaimWithdraw_ShouldAllowPrincipalClaim_WhenAutoBuyIsEnabled() external {
         vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
         vault.seedCycleRecord(VAULT_HASH, 1, 20 ether, 20 ether);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
 
         vm.prank(user);
         vault.withdraw(VAULT_HASH, 7 ether);
@@ -447,6 +773,149 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(
             vault.getPendingWithdraws(VAULT_HASH, user).length, 0, "claim should remove the pending withdraw record"
         );
+    }
+
+    function testSystemPausedWithdrawAfterLoss_ShouldReduceBasisProportionallyAndClearOnFullExit() external {
+        vault.seedSystemPausedPrincipalWithBasis(VAULT_HASH, user, 60 ether, 100 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.systemPausedPrincipal, 30 ether, "half of the paused collateral should remain");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        fund = _userFund(user);
+        assertEq(fund.systemPausedPrincipal, 0, "the final paused withdrawal should clear collateral");
+        assertEq(fund.initialAmountTotal, 0, "the final paused withdrawal should clear the cost basis");
+    }
+
+    function testClaimActiveAfterLoss_ShouldClearInitialAmountTotal() external {
+        vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 0);
+        vault.seedCurrentCycleId(VAULT_HASH, 1);
+        vault.seedCumCollateral(VAULT_HASH, 1, 6e17);
+        vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.ENDED);
+
+        uint256 balanceBefore = collateral.balanceOf(user);
+        vm.prank(user);
+        vault.claimActive(VAULT_HASH);
+        uint256 balanceAfter = collateral.balanceOf(user);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(balanceAfter - balanceBefore, 60 ether, "claim should return the loss-adjusted collateral");
+        assertEq(fund.activePrincipal, 0, "claim should clear active principal");
+        assertEq(fund.initialAmountTotal, 0, "claiming the full position should clear the cost basis");
+    }
+
+    function testClaimWithdrawExitAll_ShouldClaimAndClearOtherWithdrawRecords() external {
+        vault.seedUserFundState(VAULT_HASH, user, 20 ether, 20 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 20 ether, 20 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 5 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 15 ether, 15 ether);
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+        assertEq(withdraws.length, 1, "exit-all processing should merge old withdraw records");
+        assertEq(withdraws[0].amount, 20 ether, "exit-all record should include old withdraw records");
+        assertTrue(withdraws[0].isExitAll, "merged withdraw record should be marked exit-all");
+
+        uint256 exitAllId = withdraws[0].id;
+
+        uint256 balanceBefore = collateral.balanceOf(user);
+        vm.prank(user);
+        vault.claimWithdraw(VAULT_HASH, exitAllId);
+        uint256 balanceAfter = collateral.balanceOf(user);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(balanceAfter - balanceBefore, 20 ether, "claim should transfer exit-all and old withdraw records");
+        assertEq(vault.getPendingWithdraws(VAULT_HASH, user).length, 0, "exit-all claim should clear old withdraws");
+        assertEq(fund.stoppedPrincipal, 0, "exit-all claim should clear all stopped principal accounting");
+    }
+
+    function testWithdrawExitAll_ShouldAllowClaimableWithdrawOnlyPosition() external {
+        vault.seedUserFundState(VAULT_HASH, user, 5 ether, 5 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 5 ether, 5 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 5 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertEq(fund.activePrincipal, 0, "user should have no active principal after full normal withdraw");
+        assertEq(fund.stoppedPrincipal, 5 ether, "normal withdraw should be claimable");
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        EnhancedVault.FundRecord[] memory requests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
+        assertEq(requests.length, 1, "exit-all request should be allowed for claimable-only position");
+        assertTrue(requests[0].isExitAll, "claimable-only exit request should be marked");
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 0, 0);
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+        assertEq(withdraws.length, 1, "claimable-only full exit should still have one withdraw record");
+        assertEq(withdraws[0].amount, 5 ether, "claimable amount should be preserved");
+        assertTrue(withdraws[0].isExitAll, "converted record should be marked exit-all");
+    }
+
+    function testWithdrawExitAll_ShouldPreserveFundConfigAndPremium() external {
+        _depositAs(user, 20 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vm.prank(user);
+        vault.setBuybackEnabled(VAULT_HASH, true);
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, false);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 3 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(user);
+        assertTrue(fund.exists, "full-exit should preserve the existing fund record");
+        assertTrue(fund.buybackEnabled, "full-exit should preserve manual buyback config");
+        assertFalse(fund.autoBuyEnabled, "full-exit should preserve auto-buy config");
+        assertEq(fund.materializedPremium, 3 ether, "full-exit should not touch materialized premium");
+        assertEq(fund.activePrincipal, 0, "full-exit should clear active principal");
+        assertEq(fund.pendingActivePrincipal, 0, "full-exit should clear pending active principal");
+        assertEq(fund.stoppedPrincipal, 20 ether, "full-exit should make principal claimable");
+
+        _depositAs(user, 1 ether);
+
+        fund = _userFund(user);
+        assertTrue(fund.buybackEnabled, "fresh deposit after full-exit should not reset manual buyback");
+        assertFalse(fund.autoBuyEnabled, "fresh deposit after full-exit should not reset auto-buy");
+        assertEq(fund.materializedPremium, 3 ether, "fresh deposit after full-exit should not touch premium");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "fresh deposit should enter pending active");
     }
 
     function testCancelWithdraw_ShouldRemovePendingRequestAndReducePendingAmount() external {
@@ -555,6 +1024,17 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.materializedPremium, 2 ether, "claim should reduce materialized premium");
     }
 
+    function testClaimPremium_ShouldRevert_WhenAutoBuyIsEnabled() external {
+        vault.seedMaterializedPremium(VAULT_HASH, user, 5 ether);
+
+        vm.prank(user);
+        vault.setAutoBuyEnabled(VAULT_HASH, true);
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.AutoBuyPremiumClaimDisabled.selector);
+        vault.claimPremium(VAULT_HASH, 3 ether);
+    }
+
     function testClaimPremium_ShouldMaterializeProjectedPremiumBeforeTransfer() external {
         vault.seedUserFundState(VAULT_HASH, user, 100 ether, 100 ether, 1e18, 1e16);
         vault.seedMaterializedPremium(VAULT_HASH, user, 1 ether);
@@ -570,6 +1050,69 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         assertEq(balanceAfter - balanceBefore, 3 ether, "claim should transfer projected premium");
         assertEq(fund.materializedPremium, 0, "claim should consume newly materialized premium");
         assertEq(fund.entryCumPremium, 3e16, "claim should advance entry premium checkpoint");
+    }
+
+    function testCreateOrder_ShouldUpdateLivePremiumRatioAndAllowClaimBeforeSettlement() external {
+        options.setPositionResult(77, 1 ether);
+        vault.seedUserFundState(VAULT_HASH, user, 10 ether, 10 ether, 1e18, 0);
+        vault.seedCycleRecord(VAULT_HASH, 1, 10 ether, 10 ether);
+
+        bytes memory payload = _buildOrderPayload({
+            premiumPrice: 1 ether,
+            quoteQuantity: 1 ether,
+            quantity: 1 ether,
+            collateralAmount: 1 ether,
+            quoteNonce: 1,
+            confirmationNonce: 1
+        });
+
+        vm.prank(operator);
+        vault.createOrder(VAULT_HASH, payload, "", false);
+
+        EnhancedVault.CycleRecord memory liveRecord = _cycleRecord(1);
+        assertEq(liveRecord.remainingActiveCollateral, 9 ether, "order should reserve collateral");
+        assertEq(liveRecord.totalPremium, 1 ether, "current cycle should track received premium immediately");
+        assertEq(liveRecord.premiumRatio, 1e17, "live premium ratio should distribute over active collateral");
+        assertEq(vault.getVaultIds(VAULT_HASH, 1)[0], 77, "created option vault id should be tracked");
+
+        EnhancedVault.UserPosition memory posBeforeClaim = vault.getMyPosition(VAULT_HASH, user);
+        assertEq(posBeforeClaim.projectedPremium, 1 ether, "live premium should be visible before settlement");
+
+        uint256 balanceBeforeClaim = strike.balanceOf(user);
+        vm.prank(user);
+        vault.claimPremium(VAULT_HASH, 1 ether);
+        uint256 balanceAfterClaim = strike.balanceOf(user);
+
+        EnhancedVault.UserFund memory fundAfterClaim = _userFund(user);
+        assertEq(balanceAfterClaim - balanceBeforeClaim, 1 ether, "claim should transfer live premium");
+        assertEq(fundAfterClaim.materializedPremium, 0, "claim should consume the materialized live premium");
+        assertEq(fundAfterClaim.entryCumPremium, 1e17, "claim should checkpoint the live premium accumulator");
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserPosition memory posAfterSettlement = vault.getMyPosition(VAULT_HASH, user);
+        assertEq(posAfterSettlement.projectedPremium, 0, "settlement should not make claimed premium claimable again");
+    }
+
+    function testCreateOrder_ShouldRevertWhenVaultIsNotOpen() external {
+        options.setPositionResult(79, 1 ether);
+        vault.seedCycleRecord(VAULT_HASH, 1, 10 ether, 10 ether);
+        vault.seedPhase(VAULT_HASH, EnhancedVault.CyclePhase.SETTLED);
+
+        bytes memory payload = _buildOrderPayload({
+            premiumPrice: 1 ether,
+            quoteQuantity: 1 ether,
+            quantity: 1 ether,
+            collateralAmount: 1 ether,
+            quoteNonce: 3,
+            confirmationNonce: 3
+        });
+
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
+        vm.prank(operator);
+        vault.createOrder(VAULT_HASH, payload, "", false);
     }
 
     function testClaimActive_ShouldPreserveProjectedPremiumForLaterClaim() external {
@@ -626,6 +1169,31 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
         );
     }
 
+    function testMarginPool_ShouldReadEnhancedOptionsMarginPool() external {
+        MockEnhancedOptionsForVaultUnit marginOptions = new MockEnhancedOptionsForVaultUnit();
+        address newMarginPool = address(0xABCD);
+        marginOptions.setMarginPool(newMarginPool);
+        vault.seedCore(address(marginOptions), operator, address(0x2222));
+
+        assertEq(vault.marginPool(), newMarginPool, "Vault should read EnhancedOptions marginPool");
+    }
+
+    function testSetAssetApprovalMarginPool_ShouldApproveEnhancedOptionsMarginPool() external {
+        MockEnhancedOptionsForVaultUnit marginOptions = new MockEnhancedOptionsForVaultUnit();
+        address newMarginPool = address(0xABCD);
+        marginOptions.setMarginPool(newMarginPool);
+        vault.seedCore(address(marginOptions), operator, address(0x2222));
+
+        vm.prank(owner);
+        vault.setAssetApprovalMarginPool(address(collateral), true);
+
+        assertEq(
+            collateral.allowance(address(vault), newMarginPool),
+            type(uint256).max,
+            "Vault should approve EnhancedOptions marginPool"
+        );
+    }
+
     function _depositAs(address depositor, uint256 amount) internal {
         vm.prank(depositor);
         vault.deposit(VAULT_HASH, amount);
@@ -634,6 +1202,40 @@ contract EnhancedVaultUnitTest is EnhancedVaultLinkedLibraries {
     function _users(address onlyUser) internal pure returns (address[] memory users) {
         users = new address[](1);
         users[0] = onlyUser;
+    }
+
+    function _buildOrderPayload(
+        uint256 premiumPrice,
+        uint256 quoteQuantity,
+        uint256 quantity,
+        uint256 collateralAmount,
+        uint64 quoteNonce,
+        uint64 confirmationNonce
+    ) internal view returns (bytes memory) {
+        EnhancedVault.VaultState memory st = _vaultState();
+        return abi.encodePacked(
+            address(0xBEEF),
+            address(collateral),
+            uint64(st.currentCycleStart + st.params.cycleDuration),
+            false,
+            false,
+            confirmationNonce,
+            uint128(premiumPrice),
+            uint128(quoteQuantity),
+            uint128(quantity),
+            quoteNonce,
+            new bytes(65),
+            new bytes(65),
+            uint128(2_000e8),
+            address(vault),
+            true,
+            uint64(block.timestamp + 1 days),
+            address(strike),
+            address(collateral),
+            uint128(collateralAmount),
+            uint128(0),
+            uint128(0)
+        );
     }
 
     function _swapParams(uint256 amountIn) internal view returns (EnhancedVault.SwapParams memory) {

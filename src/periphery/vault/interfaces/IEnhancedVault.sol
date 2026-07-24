@@ -21,6 +21,8 @@ interface IEnhancedVault {
         uint256 initialAmountTotal;
         uint256 nextRecordId;
         bool buybackEnabled;
+        bool exists;
+        bool autoBuyEnabled;
     }
 
     struct UserPosition {
@@ -46,18 +48,24 @@ interface IEnhancedVault {
         FundRecordType recordType;
         uint256 amount;
         uint256 createdCycleId;
+        bool isExitAll;
     }
 
     function setVaultPaused(bytes32 vaultHash, bool paused) external;
     function setVaultEnd(bytes32 vaultHash, bool isEnd) external;
+    function setVaultProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate) external;
     function pauseVault(bytes32 vaultHash) external;
     function withdraw(bytes32 vaultHash, uint256 amount) external;
+    function withdraw(bytes32 vaultHash, uint256 amount, bool isExitAll) external;
     function cancelDeposit(bytes32 vaultHash, uint256 recordId) external;
     function cancelWithdraw(bytes32 vaultHash, uint256 recordId) external;
     function claimWithdraw(bytes32 vaultHash, uint256 recordId) external;
     function claimPremium(bytes32 vaultHash, uint256 amount) external;
     function claimActive(bytes32 vaultHash) external;
     function setBuybackEnabled(bytes32 vaultHash, bool enabled) external;
+    function setAutoBuyEnabled(bytes32 vaultHash, bool enabled) external;
+    function setProtocolFeeRecipient(address recipient) external;
+    function claimProtocolFees(bytes32 vaultHash) external;
     function endVault(bytes32 vaultHash) external;
     function getMyPosition(bytes32 vaultHash, address user) external view returns (UserPosition memory);
     function getPendingDeposits(bytes32 vaultHash, address user) external view returns (FundRecord[] memory);

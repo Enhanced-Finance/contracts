@@ -7,11 +7,11 @@ import {stdJson} from "forge-std/StdJson.sol";
 interface IEnhancedVaultConfigTarget {
     function operator() external view returns (address);
     function vaultSigner() external view returns (address);
-    function marginPool() external view returns (address);
+    function protocolFeeRecipient() external view returns (address);
     function swapRouter() external view returns (address);
     function setOperator(address newOperator) external;
     function setVaultSigner(address newSigner) external;
-    function setMarginPool(address newMarginPool) external;
+    function setProtocolFeeRecipient(address newRecipient) external;
     function setSwapRouter(address newSwapRouter) external;
     function setAssetApprovalMarginPool(address asset, bool approval) external;
     function setAssetApprovalSwapRouter(address asset, bool approval) external;
@@ -22,8 +22,8 @@ interface IEnhancedVaultConfigTarget {
  *
  * Supported config keys under ".EnhancedVault":
  *   operator             (address)   — setOperator
- *   vaultSigner       (address)   — setVaultSigner
- *   marginPool           (address)   — setMarginPool
+ *   vaultSigner          (address)   — setVaultSigner
+ *   protocolFeeRecipient (address)   — setProtocolFeeRecipient
  *   swapRouter           (address)   — setSwapRouter
  *   marginPoolApprovals  (array)     — setAssetApprovalMarginPool
  *   swapRouterApprovals  (array)     — setAssetApprovalSwapRouter
@@ -87,16 +87,9 @@ contract ConfigureEnhancedVault is Script {
             }
         }
 
-        // 3. MarginPool — resolve from .deploy first, then config
-        address desiredMarginPool;
-        if (vm.keyExists(deployJson, ".MarginPool.proxyAddress")) {
-            desiredMarginPool = deployJson.readAddress(".MarginPool.proxyAddress");
-        } else if (vm.keyExists(configJson, ".EnhancedVault.marginPool")) {
-            desiredMarginPool = configJson.readAddress(".EnhancedVault.marginPool");
-        }
-        if (desiredMarginPool != address(0) && vault.marginPool() != desiredMarginPool) {
-            console.log("Updating MarginPool...");
-            vault.setMarginPool(desiredMarginPool);
+        // 3. ProtocolFeeRecipient
+        if (vm.keyExists(configJson, ".EnhancedVault.protocolFeeRecipient")) {
+            _applyProtocolFeeRecipient(vault, configJson.readAddress(".EnhancedVault.protocolFeeRecipient"));
         }
 
         // 4. SwapRouter
@@ -143,9 +136,14 @@ contract ConfigureEnhancedVault is Script {
         }
     }
 
-    function _applyMarginPoolApprovals(IEnhancedVaultConfigTarget vault, ApprovalConfig[] memory approvals)
-        internal
-    {
+    function _applyProtocolFeeRecipient(IEnhancedVaultConfigTarget vault, address desiredRecipient) internal {
+        if (desiredRecipient != address(0) && vault.protocolFeeRecipient() != desiredRecipient) {
+            console.log("Updating ProtocolFeeRecipient...");
+            vault.setProtocolFeeRecipient(desiredRecipient);
+        }
+    }
+
+    function _applyMarginPoolApprovals(IEnhancedVaultConfigTarget vault, ApprovalConfig[] memory approvals) internal {
         uint256 len = approvals.length;
         for (uint256 i; i < len; i++) {
             ApprovalConfig memory config = approvals[i];
@@ -155,9 +153,7 @@ contract ConfigureEnhancedVault is Script {
         }
     }
 
-    function _applySwapRouterApprovals(IEnhancedVaultConfigTarget vault, ApprovalConfig[] memory approvals)
-        internal
-    {
+    function _applySwapRouterApprovals(IEnhancedVaultConfigTarget vault, ApprovalConfig[] memory approvals) internal {
         uint256 len = approvals.length;
         for (uint256 i; i < len; i++) {
             ApprovalConfig memory config = approvals[i];

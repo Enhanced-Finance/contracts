@@ -56,24 +56,59 @@ library Parser {
         address payer; // zero address means user pays themselves
     }
 
-    struct OTCTrade {
-        uint256 chainId;
-        address user1;
-        address user2;
-        address asset1;
-        address asset2;
-        uint256 amount1; // asset1 decimals
-        uint256 amount2; // asset2 decimals
-        uint64 nonce;
+    function quoteStructHash(Quote memory q) public pure returns (bytes32) {
+        bytes32 typeHash = keccak256(
+            "Quote(address assetAddress,uint256 chainId,bool isPut,bool isPhysicallySettled,uint256 strike,uint64 expiry,address maker,uint64 nonce,uint256 price,uint256 quantity,bool isTakerBuy,uint64 validUntil,address usd,address collateralAsset)"
+        );
+        bytes memory firstHalf =
+            abi.encode(typeHash, q.assetAddress, q.chainId, q.isPut, q.isPhysicallySettled, q.strike, q.expiry);
+        bytes memory secondHalf =
+            abi.encode(q.maker, q.nonce, q.price, q.quantity, q.isTakerBuy, q.validUntil, q.usd, q.collateralAsset);
+        return keccak256(bytes.concat(firstHalf, secondHalf));
+    }
+
+    function confirmationStructHash(Confirmation memory c) public pure returns (bytes32) {
+        bytes32 typeHash = keccak256(
+            "Confirmation(address maker,address assetAddress,uint256 chainId,uint64 expiry,bool isPut,bool isPhysicallySettled,uint64 nonce,uint256 price,uint256 quantity,uint64 quoteNonce,bytes quoteSignature,uint256 strike,address taker,bool isTakerBuy,address usd,address collateralAsset,uint256 collateralAmount)"
+        );
+        bytes memory firstHalf = abi.encode(
+            typeHash, c.maker, c.assetAddress, c.chainId, c.expiry, c.isPut, c.isPhysicallySettled, c.nonce, c.price
+        );
+        bytes memory secondHalf = abi.encode(
+            c.quantity,
+            c.quoteNonce,
+            keccak256(c.quoteSignature),
+            c.strike,
+            c.taker,
+            c.isTakerBuy,
+            c.usd,
+            c.collateralAsset,
+            c.collateralAmount
+        );
+        return keccak256(bytes.concat(firstHalf, secondHalf));
+    }
+
+    function transferStructHash(Transfer memory t) public pure returns (bytes32) {
+        bytes32 typeHash = keccak256(
+            "Transfer(address user,address asset,uint256 chainId,uint256 amount,bool isDeposit,uint64 nonce)"
+        );
+        return keccak256(abi.encode(typeHash, t.user, t.asset, t.chainId, t.amount, t.isDeposit, t.nonce));
     }
 
     /// @notice Parse a packed payload into both Quote and Confirmation structs
-    /// @dev Parses 361-byte payload into Quote + Confirmation + sigs for both
+    /// @dev Parses 377-byte payload into Quote + Confirmation + sigs for both
     /// @dev also returns additional data needed to create an option position
     function parseQuoteAndConfirmation(bytes memory payload)
         public
         view
-        returns (Quote memory q, Confirmation memory c, bytes memory quoteSig, bytes memory confSig, uint256 fee)
+        returns (
+            Quote memory q,
+            Confirmation memory c,
+            bytes memory quoteSig,
+            bytes memory confSig,
+            uint256 protocolFee,
+            uint256 makerFee
+        )
     {
         // expected length:
         // 20 (maker) + 20 (asset) + 8 (expiry) +
@@ -81,9 +116,9 @@ library Parser {
         // 16 (quoteQuantity) + 16 (confirmationQuantity) + 8 (quoteNonce) + 65 (quoteSig) +
         // 65 (confSig) + 16 (strike) + 20 (taker) +
         // 1 (isTakerBuy) + 8 (validUntil) + 20 (usd) +
-        // 20 (collateralAsset) + 16 (collateralAmount) + 16 (fee)
-        // = 361 bytes total
-        require(payload.length == 361, "Invalid payload length");
+        // 20 (collateralAsset) + 16 (collateralAmount) + 16 (protocolFee) + 16 (makerFee)
+        // = 377 bytes total
+        require(payload.length == 377, "Invalid payload length");
 
         quoteSig = new bytes(65);
         confSig = new bytes(65);
@@ -138,8 +173,9 @@ library Parser {
             mstore(add(confSig, 64), mload(add(payload, 243))) // bytes 32-63
             mstore8(add(confSig, 96), byte(0, mload(add(payload, 275)))) // byte 64
 
-            // --- Extract fee ---
-            fee := mload(add(payload, 361))
+            // --- Extract fees ---
+            protocolFee := mload(add(payload, 361))
+            makerFee := mload(add(payload, 377))
         }
 
         // --- Cast uint128 → uint256 outside assembly ---
@@ -152,7 +188,8 @@ library Parser {
         c.quantity = uint256(uint128(c.quantity));
         c.collateralAmount = uint256(uint128(c.collateralAmount));
 
-        fee = uint256(uint128(fee));
+        protocolFee = uint256(uint128(protocolFee));
+        makerFee = uint256(uint128(makerFee));
     }
 
     /// @notice Parse a packed payload into a Transfer struct and its signature
@@ -200,41 +237,5 @@ library Parser {
 
         // Cast uint128 → uint256 for amount
         t.amount = uint256(uint128(t.amount));
-    }
-
-    function parseOTCTrade(bytes memory payload) public view returns (OTCTrade memory t, bytes memory sig) {
-        // expected length:
-        // 20 (user1) + 20 (user2) +
-        // 20 (asset1) + 20 (asset2) +
-        // 16 (amount1) + 16 (amount2) +
-        // 8 (nonce) + 65 (sig)
-        // = 185 bytes total
-
-        require(payload.length == 185, "Invalid payload length");
-
-        sig = new bytes(65);
-
-        assembly {
-            let tPtr := t
-
-            // --- OTCTrade fields ---
-            mstore(tPtr, chainid()) // chainId
-            mstore(add(tPtr, 0x20), mload(add(payload, 20))) // user1
-            mstore(add(tPtr, 0x40), mload(add(payload, 40))) // user2
-            mstore(add(tPtr, 0x60), mload(add(payload, 60))) // asset1
-            mstore(add(tPtr, 0x80), mload(add(payload, 80))) // asset2
-            mstore(add(tPtr, 0xA0), mload(add(payload, 96))) // amount1
-            mstore(add(tPtr, 0xC0), mload(add(payload, 112))) // amount2
-            mstore(add(tPtr, 0xE0), mload(add(payload, 120))) // nonce
-
-            // --- Extract signature ---
-            mstore(add(sig, 32), mload(add(payload, 152))) // bytes 0-31
-            mstore(add(sig, 64), mload(add(payload, 184))) // bytes 32-63
-            mstore8(add(sig, 96), byte(0, mload(add(payload, 216)))) // byte 64
-        }
-
-        // --- Cast uint128 → uint256 outside assembly ---
-        t.amount1 = uint256(uint128(t.amount1));
-        t.amount2 = uint256(uint128(t.amount2));
     }
 }

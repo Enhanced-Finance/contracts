@@ -19,10 +19,10 @@ contract RefreshControllerConfig is Script {
 
         require(vm.isFile(deployPath), "Deploy file not found");
         string memory deployJson = vm.readFile(deployPath);
-        
+
         address controllerAddr = deployJson.readAddress(".Controller.proxyAddress");
         address controllerLogicAddr = deployJson.readAddress(".ControllerLogic.proxyAddress");
-        
+
         require(controllerAddr != address(0), "Controller proxy not found");
         require(controllerLogicAddr != address(0), "ControllerLogic proxy not found");
 
@@ -30,7 +30,7 @@ contract RefreshControllerConfig is Script {
 
         console.log("Refreshing Controller configuration...");
         Controller(controllerAddr).refreshConfiguration();
-        
+
         console.log("Refreshing ControllerLogic configuration...");
         ControllerLogic(controllerLogicAddr).refreshConfiguration();
 

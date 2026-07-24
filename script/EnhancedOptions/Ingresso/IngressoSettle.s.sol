@@ -11,7 +11,7 @@ contract IngressoSettle is Script {
     using stdJson for string;
 
     // --- Configuration: Set these values before running ---
-    uint256 constant VAULT_ID = 6; // Vault ID to settle
+    uint256 constant VAULT_ID = 4; // Vault ID to settle
     // ----------------------------------------------------
 
     function run() public {

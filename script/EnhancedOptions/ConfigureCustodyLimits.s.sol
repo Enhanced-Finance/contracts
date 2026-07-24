@@ -3,18 +3,18 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
+import {IEnhancedOptionsTimelock} from "src/core/interfaces/IEnhancedOptionsTimelock.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 /**
- * @notice Configure EnhancedOptions makerWhitelist & borrowerWhitelist from config/<chainId>.json.
+ * @notice Configure EnhancedOptions makerWhitelist & custody limits from config/<chainId>.json.
  *
  * Config keys:
  *   .EnhancedOptions.makerWhitelist       -> array of { "maker": address, "receiver": address }
  *   .EnhancedOptions.makerCustodyLimitBps -> array of { "maker": address, "receiver": address, "bps": uint256 }
  *
- * Each makerCustodyLimitBps entry calls `setMakerCustodyLimitBps(maker, receiver, bps)`,
- * which both authorizes the (maker, receiver) pair to borrow vault collateral and sets
- * its credit limit (basis points of each vault's deposited asset).
+ * makerWhitelist changes and non-zero makerCustodyLimitBps changes use the
+ * EnhancedOptions 48-hour schedule/execute timelock.
  *
  * For each entry the on-chain value is read; a tx is only sent when the desired
  * value differs. Pass `bps = 0` to revoke authorization for a (maker, receiver) pair.
@@ -64,13 +64,7 @@ contract ConfigureCustodyLimits is Script {
                 address maker = entries[i].maker;
                 address desired = entries[i].receiver;
                 require(maker != address(0), "makerWhitelist: maker cannot be zero");
-                address current = enhancedOptions.makerWhitelist(maker);
-                if (current == desired) {
-                    console.log("makerWhitelist already up-to-date:", maker);
-                    continue;
-                }
-                console.log("setMakerWhitelist:", maker, "->", desired);
-                enhancedOptions.setMakerWhitelist(maker, desired);
+                _syncMakerWhitelist(enhancedOptions, maker, desired);
             }
         }
 
@@ -84,17 +78,85 @@ contract ConfigureCustodyLimits is Script {
                 require(maker != address(0), "makerCustodyLimitBps: maker cannot be zero");
                 require(receiver != address(0), "makerCustodyLimitBps: receiver cannot be zero");
 
-                uint256 currentBps = enhancedOptions.makerCustodyLimitBps(maker, receiver);
-                if (currentBps == desiredBps) {
-                    console.log("makerCustodyLimitBps already up-to-date:", maker, receiver);
-                    continue;
-                }
-                console.log("setMakerCustodyLimitBps:", maker, receiver, desiredBps);
-                enhancedOptions.setMakerCustodyLimitBps(maker, receiver, desiredBps);
+                _syncMakerCustodyLimit(enhancedOptions, maker, receiver, desiredBps);
             }
         }
 
         vm.stopBroadcast();
         console.log("ConfigureWhitelistMappings complete.");
+    }
+
+    function _syncMakerWhitelist(EnhancedOptions enhancedOptions, address maker, address desired) internal {
+        address current = enhancedOptions.makerWhitelist(maker);
+        bytes memory key = abi.encode(maker);
+        (bytes memory pendingData, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+        address pendingValue;
+        if (pendingData.length != 0) (, pendingValue) = abi.decode(pendingData, (address, address));
+
+        if (executeAfter != 0 && pendingValue != desired) {
+            enhancedOptions.cancelConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+            executeAfter = 0;
+        }
+        if (current == desired) {
+            if (executeAfter != 0) {
+                enhancedOptions.cancelConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+            }
+            return;
+        }
+        if (executeAfter == 0) {
+            console.log("Scheduling makerWhitelist:", maker, desired);
+            enhancedOptions.scheduleConfigUpdate(
+                IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, abi.encode(maker, desired)
+            );
+        } else if (block.timestamp >= executeAfter) {
+            console.log("Executing makerWhitelist:", maker, desired);
+            enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+        } else {
+            console.log("makerWhitelist pending until:", executeAfter);
+        }
+    }
+
+    function _syncMakerCustodyLimit(
+        EnhancedOptions enhancedOptions,
+        address maker,
+        address receiver,
+        uint256 desiredBps
+    ) internal {
+        uint256 current = enhancedOptions.makerCustodyLimitBps(maker, receiver);
+        bytes memory key = abi.encode(maker, receiver);
+        (bytes memory pendingData, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key);
+        uint256 pendingValue;
+        if (pendingData.length != 0) (,, pendingValue) = abi.decode(pendingData, (address, address, uint256));
+
+        if (desiredBps == 0) {
+            if (current != 0 || executeAfter != 0) enhancedOptions.setMakerCustodyLimitBps(maker, receiver, 0);
+            return;
+        }
+        if (executeAfter != 0 && pendingValue != desiredBps) {
+            enhancedOptions.cancelConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key);
+            executeAfter = 0;
+        }
+        if (current == desiredBps) {
+            if (executeAfter != 0) {
+                enhancedOptions.cancelConfigUpdate(
+                    IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key
+                );
+            }
+            return;
+        }
+        if (executeAfter == 0) {
+            console.log("Scheduling makerCustodyLimitBps:", maker, receiver, desiredBps);
+            enhancedOptions.scheduleConfigUpdate(
+                IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps,
+                abi.encode(maker, receiver, desiredBps)
+            );
+        } else if (block.timestamp >= executeAfter) {
+            console.log("Executing makerCustodyLimitBps:", maker, receiver, desiredBps);
+            enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerCustodyLimitBps, key);
+        } else {
+            console.log("makerCustodyLimitBps pending until:", executeAfter);
+        }
     }
 }

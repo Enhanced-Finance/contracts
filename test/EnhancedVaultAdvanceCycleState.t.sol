@@ -21,9 +21,9 @@ contract EnhancedVaultHarness is EnhancedVault {
         uint256 cycleId,
         uint256 nextId,
         uint256 activeCol,
-        uint256 totalReturned
+        uint256 netActiveCollateral
     ) external returns (uint256) {
-        return _advanceCycleState(vaultHash, cycleId, nextId, activeCol, totalReturned);
+        return _advanceCycleState(vaultHash, cycleId, nextId, activeCol, netActiveCollateral);
     }
 }
 
@@ -59,7 +59,7 @@ contract EnhancedVaultAdvanceCycleStateTest is EnhancedVaultLinkedLibraries {
         });
 
         harness.exposedAdvanceCycleState({
-            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, totalReturned: 0
+            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, netActiveCollateral: 100
         });
 
         EnhancedVault.CycleRecord memory nextRec = _cycleRecord(VAULT_HASH, NEXT_ID);
@@ -72,7 +72,7 @@ contract EnhancedVaultAdvanceCycleStateTest is EnhancedVaultLinkedLibraries {
         });
 
         uint256 capReduction = harness.exposedAdvanceCycleState({
-            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, totalReturned: 80
+            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, netActiveCollateral: 80
         });
 
         EnhancedVault.CycleRecord memory nextRec = _cycleRecord(VAULT_HASH, NEXT_ID);
@@ -86,7 +86,7 @@ contract EnhancedVaultAdvanceCycleStateTest is EnhancedVaultLinkedLibraries {
         });
 
         harness.exposedAdvanceCycleState({
-            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, totalReturned: 55
+            vaultHash: VAULT_HASH, cycleId: CYCLE_ID, nextId: NEXT_ID, activeCol: 100, netActiveCollateral: 80
         });
 
         EnhancedVault.CycleRecord memory nextRec = _cycleRecord(VAULT_HASH, NEXT_ID);

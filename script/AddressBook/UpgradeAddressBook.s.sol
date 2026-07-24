@@ -38,11 +38,7 @@ contract UpgradeAddressBook is Script {
             deployPath,
             ".AddressBook.implementationAddress"
         );
-        vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".AddressBook.verifyImplementationCommand"
-        );
+        vm.writeJson(string.concat("\"", verifyImplCmd, "\""), deployPath, ".AddressBook.verifyImplementationCommand");
         console.log("AddressBook upgraded:", proxyAddr);
         console.log("New implementation:", address(newImplementation));
     }

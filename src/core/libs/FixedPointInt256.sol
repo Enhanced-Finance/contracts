@@ -123,6 +123,7 @@ library FixedPointInt256 {
      * @return div of two signed integers
      */
     function div(FixedPointInt memory a, FixedPointInt memory b) internal pure returns (FixedPointInt memory) {
+        require(b.value != 0, "FixedPointInt256: division by zero");
         return FixedPointInt({value: (a.value * SCALING_FACTOR) / b.value});
     }
 

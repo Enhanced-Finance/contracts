@@ -38,11 +38,7 @@ contract UpgradeMMarket is Script {
             deployPath,
             ".MMarket.implementationAddress"
         );
-        vm.writeJson(
-            string.concat("\"", verifyImplCmd, "\""),
-            deployPath,
-            ".MMarket.verifyImplementationCommand"
-        );
+        vm.writeJson(string.concat("\"", verifyImplCmd, "\""), deployPath, ".MMarket.verifyImplementationCommand");
 
         console.log("MMarket upgraded:", proxyAddr);
         console.log("New implementation:", address(newImplementation));

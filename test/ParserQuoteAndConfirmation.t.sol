@@ -13,7 +13,8 @@ contract ParserHarness {
             Parser.Confirmation memory c,
             bytes memory quoteSig,
             bytes memory confSig,
-            uint256 fee
+            uint256 protocolFee,
+            uint256 makerFee
         )
     {
         return Parser.parseQuoteAndConfirmation(payload);
@@ -21,13 +22,23 @@ contract ParserHarness {
 }
 
 contract ParserQuoteAndConfirmationTest is Test {
-    address internal constant PARSER_LIBRARY = 0x8192aefd9e6278c804596F92db4356510976e929;
+    address internal constant PARSER_LIBRARY = 0x848368Aa602C0634900992CBB3fD7B1E040080c0;
 
     ParserHarness internal harness;
 
     function setUp() external {
         vm.etch(PARSER_LIBRARY, type(Parser).runtimeCode);
         harness = new ParserHarness();
+    }
+
+    function test_parseQuoteAndConfirmation_usesRenamedFeeFields() external view {
+        string memory parserSource = vm.readFile(string.concat(vm.projectRoot(), "/src/core/libs/Parser.sol"));
+
+        assertFalse(
+            _contains(parserSource, string.concat("taker", "Fee")),
+            "parser should not expose the retired taker fee name"
+        );
+        assertTrue(_contains(parserSource, "protocolFee"), "parser should expose protocolFee");
     }
 
     function test_parseQuoteAndConfirmation_readsSeparateQuoteAndConfirmationQuantities() external view {
@@ -54,16 +65,18 @@ contract ParserQuoteAndConfirmationTest is Test {
             address(0x4004),
             address(0x5005),
             uint128(13e18),
-            uint128(2e16)
+            uint128(2e16),
+            uint128(3e16)
         );
 
-        (Parser.Quote memory q, Parser.Confirmation memory c,,, uint256 fee) =
+        (Parser.Quote memory q, Parser.Confirmation memory c,,, uint256 protocolFee, uint256 makerFee) =
             harness.parseQuoteAndConfirmation(payload);
 
-        assertEq(payload.length, 361);
+        assertEq(payload.length, 377);
         assertEq(q.quantity, quoteQuantity);
         assertEq(c.quantity, confirmationQuantity);
-        assertEq(fee, 2e16);
+        assertEq(protocolFee, 2e16);
+        assertEq(makerFee, 3e16);
     }
 
     function test_parseQuoteAndConfirmation_rejectsLegacyPayloadLength() external {
@@ -91,5 +104,23 @@ contract ParserQuoteAndConfirmationTest is Test {
 
         vm.expectRevert();
         harness.parseQuoteAndConfirmation(legacyPayload);
+    }
+
+    function _contains(string memory text, string memory needle) internal pure returns (bool) {
+        bytes memory textBytes = bytes(text);
+        bytes memory needleBytes = bytes(needle);
+        if (needleBytes.length > textBytes.length) return false;
+
+        for (uint256 i; i <= textBytes.length - needleBytes.length; i++) {
+            bool matches = true;
+            for (uint256 j; j < needleBytes.length; j++) {
+                if (textBytes[i + j] != needleBytes[j]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) return true;
+        }
+        return false;
     }
 }

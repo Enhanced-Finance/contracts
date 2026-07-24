@@ -9,29 +9,29 @@ import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 /// settlePreviousCycle -> processQueuedUsers (paged) -> startNextCycle.
 /// Prefer explicit step scripts for ops (`SettlePreviousCycle/ProcessQueuedUsers/StartNextCycle`).
 contract NextCycle is BaseEnhancedVaultScript {
-    bytes32 constant VAULT_HASH = 0x9832d172f61a4ac7cca7bad266a425d65bcb8fb83a3d195c378972572c5f2c3b;
     uint256 constant PROCESS_LIMIT = 100;
 
     function run() public {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        bytes32 vaultHash = vm.envBytes32("VAULT_HASH");
         (EnhancedVault vault, address vaultAddr) = _loadVault();
 
         console.log("EnhancedVault:", vaultAddr);
-        console.log("vaultHash:", vm.toString(VAULT_HASH));
+        console.log("vaultHash:", vm.toString(vaultHash));
 
         vm.startBroadcast(privateKey);
-        vault.settlePreviousCycle(VAULT_HASH);
+        vault.settlePreviousCycle(vaultHash);
 
-        (,,, uint256 remaining,) = vault.getQueueProgress(VAULT_HASH);
+        (,,, uint256 remaining,) = vault.getQueueProgress(vaultHash);
         uint256 offset;
         while (remaining > 0) {
             uint256 batch = remaining > PROCESS_LIMIT ? PROCESS_LIMIT : remaining;
-            vault.processQueuedUsers(VAULT_HASH, offset, batch);
+            vault.processQueuedUsers(vaultHash, offset, batch);
             offset += batch;
-            (,,, remaining,) = vault.getQueueProgress(VAULT_HASH);
+            (,,, remaining,) = vault.getQueueProgress(vaultHash);
         }
 
-        vault.startNextCycle(VAULT_HASH);
+        vault.startNextCycle(vaultHash);
         vm.stopBroadcast();
     }
 }

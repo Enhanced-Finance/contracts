@@ -140,6 +140,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         oracle = OracleInterface(_oracle);
         addressBook = AddressBookInterface(_addressBook);
         ZERO = FPI.fromScaledUint(0, BASE);
+        liquidationMultiplier = MAX_BPS;
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
@@ -483,7 +484,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
             block.timestamp < vaultDetails.shortExpiryTimestamp, "MarginCalculator: can not liquidate expired position"
         );
 
-        uint256 price = oracle.getPrice(vaultDetails.shortUnderlyingAsset);
+        uint256 price = _getNonZeroLivePrice(vaultDetails.shortUnderlyingAsset);
 
         // another struct to store some useful short otoken details, to avoid stack to deep error
         ShortScaledDetails memory shortDetails = ShortScaledDetails({
@@ -492,19 +493,10 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
             shortUnderlyingPrice: FPI.fromScaledUint(price, BASE)
         });
 
-        bytes32 productHash = _getProductHash(
-            vaultDetails.shortUnderlyingAsset,
-            vaultDetails.shortStrikeAsset,
-            vaultDetails.shortCollateralAsset,
-            vaultDetails.isShortPut
-        );
-
         // convert vault collateral to a fixed point (1e27) from collateral decimals
         FPI.FixedPointInt memory depositedCollateral =
             FPI.fromScaledUint(_vault.collateralAmounts[0], vaultDetails.collateralDecimals);
-        OptionType opType = getOptionType(
-            vaultDetails.isShortPut, vaultDetails.shortCollateralAsset, vaultDetails.shortUnderlyingAsset
-        );
+
         (, FPI.FixedPointInt memory collateralRequired) = _getMarginRequired(_vault, vaultDetails);
 
         // if collateral required <= collateral in the vault, the vault is not liquidatable
@@ -663,7 +655,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
                 // get underlying asset price for short option
                 FPI.FixedPointInt memory shortUnderlyingPrice =
-                    FPI.fromScaledUint(oracle.getPrice(_vaultDetails.shortUnderlyingAsset), BASE);
+                    FPI.fromScaledUint(_getNonZeroLivePrice(_vaultDetails.shortUnderlyingAsset), BASE);
 
                 // encode product hash
                 bytes32 productHash = _getProductHash(
@@ -921,8 +913,8 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         if (_assetA == _assetB) {
             return _amount;
         }
-        uint256 priceA = oracle.getPrice(_assetA);
-        uint256 priceB = oracle.getPrice(_assetB);
+        uint256 priceA = _getNonZeroLivePrice(_assetA);
+        uint256 priceB = _getNonZeroLivePrice(_assetB);
         // amount A * price A in USD = amount B * price B in USD
         // amount B = amount A * price A / price B
         return _amount.mul(FPI.fromScaledUint(priceA, BASE)).div(FPI.fromScaledUint(priceB, BASE));
@@ -948,6 +940,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         (uint256 priceA, bool priceAFinalized) = oracle.getExpiryPrice(_assetA, _expiry);
         (uint256 priceB, bool priceBFinalized) = oracle.getExpiryPrice(_assetB, _expiry);
         require(priceAFinalized && priceBFinalized, "MarginCalculator: price at expiry not finalized yet");
+        require(priceA > 0 && priceB > 0, "MarginCalculator: expiry price cannot be 0");
         // amount A * price A in USD = amount B * price B in USD
         // amount B = amount A * price A / price B
         return _amount.mul(FPI.fromScaledUint(priceA, BASE)).div(FPI.fromScaledUint(priceB, BASE));
@@ -1246,6 +1239,7 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         pure
         returns (ShortScaledDetails memory)
     {
+        require(underlying > 0, "MarginCalculator: underlying price cannot be 0");
         // scale short amount from 1e8 to 1e27 (oToken is always in 1e8)
         FPI.FixedPointInt memory shortAmount = FPI.fromScaledUint(short, BASE);
         // scale short strike from 1e8 to 1e27
@@ -1253,6 +1247,11 @@ contract MarginCalculator is Initializable, OwnableUpgradeable, UUPSUpgradeable 
         // scale short underlying price from 1e8 to 1e27
         FPI.FixedPointInt memory shortUnderlyingPrice = FPI.fromScaledUint(underlying, BASE);
         return ShortScaledDetails(shortAmount, shortStrike, shortUnderlyingPrice);
+    }
+
+    function _getNonZeroLivePrice(address _asset) internal view returns (uint256 price) {
+        price = oracle.getPrice(_asset);
+        require(price > 0, "MarginCalculator: underlying price cannot be 0");
     }
 
     /**

@@ -26,11 +26,8 @@ contract IngressoMMarketDeposit is Script {
 
     // --- Configuration: Set these values before running ---
     uint256 constant CHAIN_ID = 11155111;
-    uint256 constant AMOUNT = 989680;
-    uint64 constant NONCE = 1777023651;
-    // Set to address(0) to have the user pay for themselves (130-byte payload).
-    // Set to a specific address to use a dedicated payer (150-byte payload).
-    address constant PAYER_ADDRESS = address(0);
+    uint256 constant AMOUNT = 5000 * 1e6;
+    uint64 constant NONCE = 6;
     // ----------------------------------------------------
 
     bytes32 constant TRANSFER_TYPEHASH =
@@ -49,9 +46,10 @@ contract IngressoMMarketDeposit is Script {
         uint256 userPrivateKey = vm.envUint("USER_PRIVATE_KEY");
         address user = vm.addr(userPrivateKey);
 
-        // Payer defaults to user when PAYER_ADDRESS is not set.
-        bool hasDedicatedPayer = PAYER_ADDRESS != address(0);
-        address payer = hasDedicatedPayer ? PAYER_ADDRESS : user;
+        // Payer defaults to user when PAYER is not set.
+        address payerAddress = vm.envOr("PAYER", address(0));
+        bool hasDedicatedPayer = payerAddress != address(0);
+        address payer = hasDedicatedPayer ? payerAddress : user;
 
         uint256 payerPrivateKey;
         if (hasDedicatedPayer) {
@@ -111,10 +109,6 @@ contract IngressoMMarketDeposit is Script {
 
         // 4. Execute (operator)
         vm.startBroadcast(deployerPrivateKey);
-        // string memory TRANSFER_PAYLOAD =
-        //     "0xea2d8c2c17a36eaa77765505b325e0c8b091805700000000000000000000000000989680010000000069eb3aa3032ac53c96db5dd9df99d9e5fa8d085d348a36252a1e1daed63c63504fa0c9db43c09b124900d488a1f300270424138b58bba655a0f0f3ca1a85f5529efde9721bd157f637262b0e6af035baa35a5475e56b100d1b";
-        // bytes memory payload1 = vm.parseBytes(TRANSFER_PAYLOAD);
-
         EnhancedOptions(enhancedOptionsAddr).ingressoMMarketDeposit(payload);
         vm.stopBroadcast();
 

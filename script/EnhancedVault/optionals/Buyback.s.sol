@@ -6,12 +6,6 @@ import {EnhancedVault} from "src/periphery/vault/EnhancedVault.sol";
 import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 
 contract Buyback is BaseEnhancedVaultScript {
-    // --- Vault/user configuration (hard-coded) ---
-    bytes32 constant VAULT_HASH = 0x9832d172f61a4ac7cca7bad266a425d65bcb8fb83a3d195c378972572c5f2c3b;
-    address constant USER_1 = 0x56E49A068e368F2D40FFE9314033671CF3402eC1;
-    bool constant INCLUDE_SECOND_USER = false;
-    address constant USER_2 = 0x0000000000000000000000000000000000000002;
-
     // --- Swap parameters ---
     uint256 constant AMOUNT_IN = 216313819891201749540;
     uint256 constant AMOUNT_OUT_MINIMUM = 4654377225398997506033;
@@ -22,15 +16,16 @@ contract Buyback is BaseEnhancedVaultScript {
 
     function run() public {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        bytes32 vaultHash = vm.envBytes32("VAULT_HASH");
         (EnhancedVault vault, address vaultAddr) = _loadVault();
-        (,, uint256 currentCycleId,,,,) = vault.vaults(VAULT_HASH);
+        (,, uint256 currentCycleId,,,,,) = vault.vaults(vaultHash);
 
-        address[] memory users = _buildUsers();
+        address[] memory users = vm.envAddress("USERS", ",");
         EnhancedVault.SwapParams memory swapParams = _buildSwapParams();
 
         console.log("EnhancedVault:", vaultAddr);
         console.log("currentCycleId:", currentCycleId);
-        console.log("vaultHash:", vm.toString(VAULT_HASH));
+        console.log("vaultHash:", vm.toString(vaultHash));
         console.log("users.length:", users.length);
         for (uint256 i = 0; i < users.length; i++) {
             console.log("user:", users[i]);
@@ -41,20 +36,8 @@ contract Buyback is BaseEnhancedVaultScript {
         console.log("swap.fee:", swapParams.fee);
 
         vm.startBroadcast(privateKey);
-        vault.buyback(VAULT_HASH, users, swapParams);
+        vault.buyback(vaultHash, users, swapParams);
         vm.stopBroadcast();
-    }
-
-    function _buildUsers() internal pure returns (address[] memory users) {
-        if (INCLUDE_SECOND_USER) {
-            users = new address[](2);
-            users[0] = USER_1;
-            users[1] = USER_2;
-            return users;
-        }
-
-        users = new address[](1);
-        users[0] = USER_1;
     }
 
     function _buildSwapParams() internal pure returns (EnhancedVault.SwapParams memory swapParams) {

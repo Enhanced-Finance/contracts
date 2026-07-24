@@ -266,13 +266,16 @@ contract Controller is Initializable, OwnableUpgradeable, ReentrancyGuardTransie
     }
 
     /**
-     * @notice lets the manager lend vault collateral out of the margin pool without mutating vault margin accounting
-     * @dev EnhancedOptions records per-vault debt and must block redeem/settle while debt is unpaid.
+     * @notice lets the manager release vault collateral to custody without mutating vault margin accounting
+     * @dev EnhancedOptions records per-vault outstanding custody amounts and blocks redeem/settle until returned.
      * @param _asset asset address
      * @param _receiver receiver address
-     * @param _amount amount to lend from pool
+     * @param _amount amount to release from pool
      */
-    function releaseVaultCollateralToCustody(address _asset, address _receiver, uint256 _amount) external notFullyPaused {
+    function releaseVaultCollateralToCustody(address _asset, address _receiver, uint256 _amount)
+        external
+        notFullyPaused
+    {
         _revertIfNotManager();
         require(_receiver != address(0), "C9");
         require(_amount > 0, "C9");

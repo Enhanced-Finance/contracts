@@ -63,7 +63,8 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         uint256 minPrincipalRatio,
         int256 buybackPriceRatio,
         bool isActive,
-        uint256 currentCycleId
+        uint256 currentCycleId,
+        uint256 protocolFeeRate
     ) external {
         VaultState storage st = vaults[vaultHash];
         st.params.cycleDuration = 1 days;
@@ -75,6 +76,7 @@ contract EnhancedVaultQueueHarness is EnhancedVault {
         st.params.strikePriceBps = strikePriceBps;
         st.params.minPrincipalRatio = minPrincipalRatio;
         st.params.buybackPriceRatio = buybackPriceRatio;
+        st.protocolFeeRate = protocolFeeRate;
         st.isActive = isActive;
         st.isPaused = false;
         st.isEnd = false;
@@ -153,7 +155,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         collateral = new MockERC20ForVaultQueue("Collateral", "COL");
         strike = new MockERC20ForVaultQueue("Strike", "USD");
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         collateral.mint(user, 1_000_000 ether);
         collateral.mint(address(vault), 1_000_000 ether);
@@ -180,6 +182,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             fund.initialAmountTotal,
             fund.nextRecordId,
             fund.buybackEnabled,
+            fund.exists,
+            fund.autoBuyEnabled
         ) = vault.userFunds(vaultHash, targetUser);
     }
 
@@ -196,7 +200,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             uint256 currentCycleStart,
             uint256 totalDeposited,
             bool isPaused,
-            bool isEnd
+            bool isEnd,
+            uint256 protocolFeeRate
         ) = vault.vaults(vaultHash);
 
         st = EnhancedVault.VaultState({
@@ -206,12 +211,13 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             currentCycleStart: currentCycleStart,
             totalDeposited: totalDeposited,
             isPaused: isPaused,
-            isEnd: isEnd
+            isEnd: isEnd,
+            protocolFeeRate: protocolFeeRate
         });
     }
 
     function _currentCycleId(bytes32 vaultHash) internal view returns (uint256 currentCycleId) {
-        (,, currentCycleId,,,,) = vault.vaults(vaultHash);
+        (,, currentCycleId,,,,,) = vault.vaults(vaultHash);
     }
 
     function _cycleRecord(bytes32 vaultHash, uint256 cycleId)
@@ -235,11 +241,14 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(fund.nextRecordId, 0);
         assertEq(fund.stoppedPrincipal, 0);
         assertFalse(fund.buybackEnabled);
+        assertFalse(fund.autoBuyEnabled);
     }
 
     function testGetVault_ShouldExposeReservedBuybackParams() external {
         bytes32 customHash = keccak256("reserved-buyback-params");
-        vault.seedVault(customHash, address(collateral), address(strike), 5 ether, 500 ether, 0, 8000, -2000, true, 3);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 5 ether, 500 ether, 0, 8000, -2000, true, 3, 0
+        );
 
         EnhancedVault.VaultState memory st = _vaultState(customHash);
         assertEq(st.params.minPrincipalRatio, 8000);
@@ -248,7 +257,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testDeposit_ShouldCreateRecordIdFromZero_OnFirstDeposit() external {
         bytes32 customHash = keccak256("first-deposit-copy-fields");
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 10 ether);
 
@@ -259,11 +270,15 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
 
     function testDeposit_ShouldKeepIncrementingRecordIds_AfterFirstDeposit() external {
         bytes32 customHash = keccak256("first-deposit-no-overwrite-fields");
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 9000, -1000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 10 ether);
 
-        vault.seedVault(customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 2000, true, 1);
+        vault.seedVault(
+            customHash, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 2000, true, 1, 0
+        );
 
         _depositAs(user, customHash, 20 ether);
 
@@ -531,7 +546,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testPause_ShouldOnlyFreeCapacityOnWithdraw_NotOnQueueProcess() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 100 ether, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, 100 ether, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(USER2_PK);
         collateral.mint(user2, 1_000_000 ether);
@@ -623,6 +638,48 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
             "converted record type mismatch"
         );
         assertEq(withdraws[0].amount, 50 ether, "converted amount should clamp to settled active");
+    }
+
+    function testProportionalBasisReduction_ShouldPreserveLossRatioOnPartialWithdraw() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 30 ether, "half of the settled collateral should remain active");
+        assertEq(fund.stoppedPrincipal, 30 ether, "half of the settled collateral should become claimable");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
+    }
+
+    function testFullWithdrawAfterLoss_ShouldClearInitialAmountTotal() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 100 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "all settled collateral should leave active principal");
+        assertEq(fund.stoppedPrincipal, 60 ether, "withdraw should clamp to settled collateral");
+        assertEq(fund.initialAmountTotal, 0, "a complete exit should clear the full cost basis");
     }
 
     function testNextCycle_ShouldNotDoubleCount_WhenActiveUserDeposits() external {
@@ -1054,8 +1111,10 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(_currentCycleId(VAULT_HASH), 2);
     }
 
-    function testSystemPauseFunds_ShouldInlineSettleUser_AndWithdrawShouldConvertToClaimableRecord() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+    function testSystemPauseFunds_ShouldInlineSettleUser_AndWithdrawAfterCycleStartShouldConvertToClaimableRecord()
+        external
+    {
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(0xD00D);
         collateral.mint(user2, 1_000_000 ether);
@@ -1069,7 +1128,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         _depositAs(user, VAULT_HASH, 1 ether);
 
@@ -1086,6 +1147,38 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(afterPause.activePrincipal, 0, "system pause should inline-settle active principal");
         assertEq(afterPause.pendingActivePrincipal, 0, "system pause should absorb pending deposits");
         assertEq(afterPause.systemPausedPrincipal, 101 ether, "system pause should stage the full force-exit amount");
+
+        vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        vm.prank(operator);
+        vault.processQueuedUsers(VAULT_HASH, 0, 2);
+
+        EnhancedVault.CycleRecord memory nextCycleAfterQueue = _cycleRecord(VAULT_HASH, 3);
+        assertEq(
+            nextCycleAfterQueue.totalActiveCollateral,
+            50 ether,
+            "system-paused user should be removed from next-cycle active"
+        );
+        assertEq(
+            nextCycleAfterQueue.remainingActiveCollateral, 50 ether, "remaining active should shrink by paused amount"
+        );
+
+        EnhancedVault.UserFund memory fundBeforeStart = _userFund(VAULT_HASH, user);
+        assertEq(fundBeforeStart.activePrincipal, 0, "user active should be zeroed in processing window");
+        assertEq(fundBeforeStart.stoppedPrincipal, 0, "no principal should be claimable before an OPEN-phase withdraw");
+        assertEq(fundBeforeStart.systemPausedPrincipal, 101 ether, "system-paused principal should remain staged");
+
+        vm.prank(operator);
+        vault.startNextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "system-paused user should not join next cycle active");
+        assertEq(fund.stoppedPrincipal, 0, "stopped principal should remain empty after cycle start");
+        assertEq(
+            fund.systemPausedPrincipal, 101 ether, "staged system-paused principal should persist across cycle start"
+        );
 
         vm.prank(user);
         vault.withdraw(VAULT_HASH, 1 ether);
@@ -1110,37 +1203,12 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         uint256 balanceAfter = collateral.balanceOf(user);
         assertEq(balanceAfter - balanceBefore, 1 ether, "claim should transfer only the converted amount");
 
-        vm.prank(operator);
-        vault.processQueuedUsers(VAULT_HASH, 0, 2);
-
-        EnhancedVault.CycleRecord memory nextCycleAfterQueue = _cycleRecord(VAULT_HASH, 3);
-        assertEq(
-            nextCycleAfterQueue.totalActiveCollateral,
-            50 ether,
-            "system-paused user should be removed from next-cycle active"
-        );
-        assertEq(
-            nextCycleAfterQueue.remainingActiveCollateral, 50 ether, "remaining active should shrink by paused amount"
-        );
-
-        EnhancedVault.UserFund memory fundBeforeStart = _userFund(VAULT_HASH, user);
-        assertEq(fundBeforeStart.activePrincipal, 0, "user active should be zeroed in processing window");
-        assertEq(fundBeforeStart.stoppedPrincipal, 0, "claim should consume stopped principal");
-        assertEq(
-            fundBeforeStart.systemPausedPrincipal, 100 ether, "unwithdrawn system-paused principal should remain staged"
-        );
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.activePrincipal, 0, "system-paused user should remain outside active principal");
+        assertEq(fund.stoppedPrincipal, 0, "claim should consume stopped principal");
+        assertEq(fund.systemPausedPrincipal, 100 ether, "unwithdrawn system-paused principal should remain staged");
         assertEq(
             vault.getPendingWithdraws(VAULT_HASH, user).length, 0, "claim should clear the pending withdraw record"
-        );
-
-        vm.prank(operator);
-        vault.startNextCycle(VAULT_HASH);
-
-        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
-        assertEq(fund.activePrincipal, 0, "system-paused user should not join next cycle active");
-        assertEq(fund.stoppedPrincipal, 0, "claimed principal should stay cleared after cycle start");
-        assertEq(
-            fund.systemPausedPrincipal, 100 ether, "staged system-paused principal should persist across cycle start"
         );
 
         MockSwapRouterForVaultQueue router = new MockSwapRouterForVaultQueue(12 ether);
@@ -1163,7 +1231,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldConvertWithdrawRequestsBeforePausingRemainingFunds() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         address user2 = vm.addr(0xD00D);
         collateral.mint(user2, 1_000_000 ether);
@@ -1177,7 +1245,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         _depositAs(user, VAULT_HASH, 1 ether);
 
@@ -1209,10 +1279,40 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(withdraws[0].amount, 40 ether, "withdraw record amount mismatch");
     }
 
+    function testSystemPauseFundsAfterLoss_ShouldReduceBasisProportionally() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 60 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 30 ether);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+        vm.prank(operator);
+        vault.systemPauseFunds(VAULT_HASH, users);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.stoppedPrincipal, 30 ether, "half of settled collateral should become claimable");
+        assertEq(fund.systemPausedPrincipal, 30 ether, "half of settled collateral should remain paused");
+        assertEq(fund.initialAmountTotal, 50 ether, "half of the cost basis should remain");
+    }
+
     function testSystemPauseFunds_ShouldConvertMultipleWithdrawRequestsProRata_WhenSettledActiveIsInsufficient()
         external
     {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 
@@ -1220,7 +1320,9 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vm.prank(operator);
         vault.nextCycle(VAULT_HASH);
 
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2);
+        vault.seedVault(
+            VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 20_000, 0, true, 2, 0
+        );
 
         vm.prank(user);
         vault.withdraw(VAULT_HASH, 40 ether);
@@ -1252,6 +1354,86 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(withdraws[1].amount, 40 ether, "second request should receive pro-rata share");
     }
 
+    function testSystemPauseFunds_ShouldUsePendingBuybackCollateralInHealthCheck() external {
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
+
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2, 0);
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 40 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 20 ether);
+        vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(20 ether)));
+        _enableBuyback(VAULT_HASH, user);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+
+        vm.prank(operator);
+        vault.buyback(
+            VAULT_HASH,
+            users,
+            EnhancedVault.SwapParams({
+                amountIn: 20 ether, amountOutMinimum: 0, deadline: block.timestamp + 1 hours, fee: 3000
+            })
+        );
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(EnhancedVault.UserNotBelowMinPrincipalRatio.selector, user));
+        vault.systemPauseFunds(VAULT_HASH, users);
+    }
+
+    function testSystemPauseFunds_ShouldPauseWhenPendingBuybackCollateralIsInsufficient() external {
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
+
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 5000, 0, true, 2, 0);
+        vault.seedCycleRecord(VAULT_HASH, 2, 100 ether, 35 ether);
+        vault.seedMaterializedPremium(VAULT_HASH, user, 10 ether);
+        vault.seedSwapRouter(address(new MockSwapRouterForVaultQueue(10 ether)));
+        _enableBuyback(VAULT_HASH, user);
+
+        address[] memory users = new address[](1);
+        users[0] = user;
+
+        vm.prank(operator);
+        vault.buyback(
+            VAULT_HASH,
+            users,
+            EnhancedVault.SwapParams({
+                amountIn: 10 ether, amountOutMinimum: 0, deadline: block.timestamp + 1 hours, fee: 3000
+            })
+        );
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.settlePreviousCycle(VAULT_HASH);
+
+        vm.prank(operator);
+        vault.systemPauseFunds(VAULT_HASH, users);
+
+        EnhancedVault.UserFund memory fundAfterPause = _userFund(VAULT_HASH, user);
+        assertEq(fundAfterPause.activePrincipal, 0, "system pause should clear active when candidate is unhealthy");
+        assertEq(fundAfterPause.pendingActivePrincipal, 0, "system pause should absorb pending buyback collateral");
+        assertEq(
+            fundAfterPause.systemPausedPrincipal,
+            45 ether,
+            "settled active plus pending buyback should enter system-paused principal"
+        );
+    }
+
     function testSystemPauseFunds_ShouldRevert_WhenPhaseIsNotSettled() external {
         address[] memory users = new address[](1);
         users[0] = user;
@@ -1261,7 +1443,7 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
     }
 
     function testSystemPauseFunds_ShouldRevert_WhenUserNotBelowMinPrincipalRatio() external {
-        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1);
+        vault.seedVault(VAULT_HASH, address(collateral), address(strike), 1, type(uint256).max, 0, 0, 0, true, 1, 0);
 
         _depositAs(user, VAULT_HASH, 100 ether);
 
@@ -1356,7 +1538,53 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         assertEq(userWithdraws[0].amount, 40 ether, "withdraw-request conversion should happen once");
     }
 
-    function testSettleToStartWindow_ShouldFreezeWriteEntrypointsExceptWithdraw() external {
+    function testProcessQueuedUsers_ExitAllShouldWithdrawSettledAndPendingWithoutNextCycleActive() external {
+        _depositAs(user, VAULT_HASH, 100 ether);
+
+        vm.warp(2 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        _depositAs(user, VAULT_HASH, 20 ether);
+
+        vm.prank(user);
+        vault.withdraw(VAULT_HASH, 0, true);
+
+        vm.warp(3 days);
+        vm.prank(operator);
+        vault.nextCycle(VAULT_HASH);
+
+        EnhancedVault.UserFund memory fund = _userFund(VAULT_HASH, user);
+        EnhancedVault.CycleRecord memory nextRec = _cycleRecord(VAULT_HASH, 3);
+        EnhancedVault.FundRecord[] memory withdraws = vault.getPendingWithdraws(VAULT_HASH, user);
+
+        assertEq(fund.activePrincipal, 0, "exit-all user should have no active principal");
+        assertEq(fund.pendingActivePrincipal, 0, "pending deposits should be consumed by exit-all");
+        assertEq(fund.systemPausedPrincipal, 0, "system paused principal should be consumed by exit-all");
+        assertEq(fund.stoppedPrincipal, 120 ether, "all principal should become claimable");
+        assertEq(nextRec.totalActiveCollateral, 0, "exit-all funds should not enter the next cycle");
+        assertEq(nextRec.remainingActiveCollateral, 0, "exit-all funds should not remain allocatable");
+        assertEq(withdraws.length, 1, "exit-all should create one withdraw record");
+        assertEq(withdraws[0].amount, 120 ether, "withdraw record should include settled and pending principal");
+        assertTrue(withdraws[0].isExitAll, "withdraw record should be marked exit-all");
+
+        vm.prank(user);
+        vm.expectRevert();
+        vault.withdraw(VAULT_HASH, 1 ether);
+
+        _depositAs(user, VAULT_HASH, 1 ether);
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.pendingActivePrincipal, 1 ether, "processed exit-all should allow a fresh deposit");
+
+        vm.prank(user);
+        vault.claimWithdraw(VAULT_HASH, withdraws[0].id);
+
+        fund = _userFund(VAULT_HASH, user);
+        assertEq(fund.stoppedPrincipal, 0, "claim should clear the exit-all stopped principal");
+        assertEq(fund.pendingActivePrincipal, 1 ether, "claim should not disturb the fresh deposit");
+    }
+
+    function testSettleToStartWindow_ShouldFreezeFundMutationEntrypoints() external {
         _depositAs(user, VAULT_HASH, 100 ether);
         vault.seedActiveUserFund(VAULT_HASH, user, 10 ether, 1e18, 0);
 
@@ -1369,9 +1597,8 @@ contract EnhancedVaultUserQueueTest is EnhancedVaultLinkedLibraries {
         vault.deposit(VAULT_HASH, 1 ether);
 
         vm.prank(user);
+        vm.expectRevert(EnhancedVault.CycleProcessingLocked.selector);
         vault.withdraw(VAULT_HASH, 1 ether);
-        EnhancedVault.FundRecord[] memory withdrawRequests = vault.getPendingWithdrawRequests(VAULT_HASH, user);
-        assertEq(withdrawRequests.length, 1, "withdraw should be allowed outside OPEN when vault active");
 
         address[] memory users = new address[](1);
         users[0] = user;

@@ -10,14 +10,10 @@ import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.so
 contract IngressoTransferAsset is Script {
     using stdJson for string;
 
-    // --- Configuration: Set these values before running ---
-    // Example values provided
-    address constant ASSET_ADDRESS = 0x134b5f74d65a34eb6F9CdaD5eD664b45A167cC43; // TUSDT
     uint256 constant CHAIN_ID = 1328;
     uint256 constant AMOUNT = 1000 * 1e18;
     bool constant IS_DEPOSIT = false;
     uint64 constant NONCE = 1;
-    // ----------------------------------------------------
 
     bytes32 constant TRANSFER_TYPEHASH =
         keccak256("Transfer(address user,address asset,uint256 chainId,uint256 amount,bool isDeposit,uint64 nonce)");
@@ -34,6 +30,7 @@ contract IngressoTransferAsset is Script {
 
         uint256 userPrivateKey = vm.envUint("USER_PRIVATE_KEY");
         address user = vm.addr(userPrivateKey);
+        address assetAddress = vm.envAddress("ASSET");
 
         uint256 chainId = block.chainid;
         string memory chainIdStr = vm.toString(chainId);
@@ -55,7 +52,7 @@ contract IngressoTransferAsset is Script {
 
             console.log("Checking allowance for User -> MMarket...");
             vm.startBroadcast(userPrivateKey);
-            IERC20 asset = IERC20(ASSET_ADDRESS);
+            IERC20 asset = IERC20(assetAddress);
             uint256 allowance = asset.allowance(user, mmarketAddr);
             if (allowance < AMOUNT) {
                 console.log("Approving token...");
@@ -66,7 +63,13 @@ contract IngressoTransferAsset is Script {
 
         // 1. Prepare Struct
         Parser.Transfer memory transfer = Parser.Transfer({
-            user: user, asset: ASSET_ADDRESS, chainId: CHAIN_ID, amount: AMOUNT, isDeposit: IS_DEPOSIT, nonce: NONCE, payer: address(0)
+            user: user,
+            asset: assetAddress,
+            chainId: CHAIN_ID,
+            amount: AMOUNT,
+            isDeposit: IS_DEPOSIT,
+            nonce: NONCE,
+            payer: address(0)
         });
 
         // 2. Sign Transfer (User)

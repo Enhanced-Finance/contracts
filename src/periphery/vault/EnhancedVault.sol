@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SignatureChecker} from "lib/openzeppelin-contracts/contracts/utils/cryptography/SignatureChecker.sol";
+import {Math} from "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {OwnableUpgradeable} from "lib/openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {
@@ -11,7 +12,6 @@ import {
 } from "lib/openzeppelin-contracts-upgradeable/contracts/utils/cryptography/EIP712Upgradeable.sol";
 import {UUPSUpgradeable} from "lib/openzeppelin-contracts-upgradeable/contracts/proxy/utils/UUPSUpgradeable.sol";
 
-import {Parser} from "../../core/libs/Parser.sol";
 import {IEnhancedOptions} from "../../core/interfaces/IEnhancedOptions.sol";
 import {ISwapRouter} from "../../core/interfaces/ISwapRouter.sol";
 import {EnhancedVaultCycleLib} from "./libs/EnhancedVaultCycleLib.sol";
@@ -43,6 +43,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     uint256 private constant PRECISION = 1e18;
     // minPrincipalRatio / buybackPriceRatio precision base (10000 = 100%).
     uint256 private constant RATIO_BASE = 10_000;
+    // protocolFeeRate precision base (10000000 = 100%) for the per-cycle settlement fee.
+    uint256 private constant PROTOCOL_FEE_RATE_BASE = 10_000_000;
     int256 private constant MAX_SIGNED_BPS = 10_000;
     uint256 internal constant MAX_BATCH_SIZE = 100;
 
@@ -78,6 +80,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 totalDeposited; // running total of collateral held (capacity check)
         bool isPaused;
         bool isEnd;
+        uint256 protocolFeeRate; // per-cycle protocol fee rate charged during cycle settlement
     }
 
     /// @notice Per-cycle record
@@ -109,6 +112,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 nextRecordId;
         bool buybackEnabled;
         bool exists;
+        bool autoBuyEnabled;
     }
 
     /// @notice Full view of a user's position for a vault, with all amounts scaled to their real values.
@@ -135,11 +139,12 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         FundRecordType recordType;
         uint256 amount;
         uint256 createdCycleId;
+        bool isExitAll;
     }
 
     struct TransitionQueue {
         address[] users;
-        uint256 queueLenSnapshot;
+        uint256 queueLenSnapshot; // logical queue length in OPEN; frozen length after settlement
         uint256 processedCount;
         uint256 queueCycleId;
     }
@@ -148,6 +153,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 totalReturned;
         uint256 totalPremium;
         uint256 activeCol;
+        uint256 protocolFee;
+        uint256 netActiveCollateral;
     }
 
     struct CycleAdvanceState {
@@ -189,10 +196,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     /// @dev vaultHash → user → whether currently queued
     mapping(bytes32 => mapping(address => bool)) public queued;
-    /// @dev vaultHash → users that submitted withdraw requests outside OPEN and must be queued on next OPEN
-    mapping(bytes32 => address[]) private _deferredQueueUsers;
-    /// @dev vaultHash → user → whether already in deferred queue list
-    mapping(bytes32 => mapping(address => bool)) private _deferredQueued;
+
     /// @dev vaultHash → cycle phase
     mapping(bytes32 => CyclePhase) public vaultPhases;
 
@@ -217,6 +221,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     mapping(bytes32 => mapping(address => mapping(uint256 => uint256))) private pendingWithdrawRequestIndex;
     mapping(bytes32 => mapping(address => mapping(uint256 => uint256))) private pendingWithdrawIndex;
 
+    /// @dev vaultHash -> user -> full-exit request record id while the full-exit flow is open.
+    mapping(bytes32 => mapping(address => uint256)) private pendingExitAllRequestId;
+
     /// @dev vaultHash → cycleId → CycleRecord
     mapping(bytes32 => mapping(uint256 => CycleRecord)) public cycleRecords;
 
@@ -232,7 +239,12 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     /// @dev Uniswap V3 swap router for buyback
     address public swapRouter;
 
-    address public marginPool;
+    /// @notice Current recipient for claimed protocol fees.
+    address public protocolFeeRecipient;
+
+    /// @notice Accrued protocol fees per vault, denominated in that vault's collateralAsset.
+    /// @dev Fees are deducted from user TVL during cycle settlement; claiming only transfers the already-accrued balance.
+    mapping(bytes32 => uint256) public protocolFeeAccrued;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Events
@@ -250,8 +262,10 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 startTime,
         int256 strikePriceBps,
         uint256 minPrincipalRatio,
-        int256 buybackPriceRatio
+        int256 buybackPriceRatio,
+        uint256 protocolFeeRate
     );
+    event VaultProtocolFeeRateChanged(bytes32 indexed vaultHash, uint256 oldRate, uint256 newRate);
     event Deposited(bytes32 indexed vaultHash, address indexed user, uint256 recordId, uint256 amount);
     event WithdrawRequested(bytes32 indexed vaultHash, address indexed user, uint256 recordId, uint256 amount);
     // event UserQueued(bytes32 indexed vaultHash, address indexed user);
@@ -276,6 +290,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     event BuybackExecuted(bytes32 indexed vaultHash, uint256 totalPremiumSpent, uint256 totalCollateralReceived);
     event BuybackAllocatedToUser(bytes32 indexed vaultHash, address indexed user, uint256 collateralReceived);
     event BuybackEnabledSet(bytes32 indexed vaultHash, address indexed user, bool enabled);
+    event AutoBuyEnabledSet(bytes32 indexed vaultHash, address indexed user, bool enabled);
     event FundRecordCreated(
         bytes32 indexed vaultHash,
         address indexed user,
@@ -349,7 +364,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     error RecordCycleMismatch();
     error InsufficientPendingAmount();
     error UserNotBelowMinPrincipalRatio(address user);
+    error WithdrawConversionPreviewMismatch();
     error FundNotFound();
+    error AutoBuyPremiumClaimDisabled();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Modifiers
@@ -382,17 +399,24 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         _disableInitializers();
     }
 
-    function initialize(address _enhancedOptions, address _operator, address _vaultSigner) external initializer {
+    function initialize(
+        address _enhancedOptions,
+        address _operator,
+        address _vaultSigner,
+        address _protocolFeeRecipient
+    ) external initializer {
         if (_enhancedOptions == address(0)) revert ZeroAddress();
         if (_operator == address(0)) revert ZeroAddress();
         if (_vaultSigner == address(0)) revert ZeroAddress();
+        if (_protocolFeeRecipient == address(0)) revert ZeroAddress();
 
-        __EIP712_init("Vault", "2.0.0");
+        __EIP712_init("Vault", "0.0.0");
         __Ownable_init_unchained(msg.sender);
 
         enhancedOptions = IEnhancedOptions(_enhancedOptions);
         operator = _operator;
         vaultSigner = _vaultSigner;
+        protocolFeeRecipient = _protocolFeeRecipient;
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
@@ -404,7 +428,11 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     /**
      * @notice Register a new vault.
      */
-    function createVault(VaultParams calldata _params) external onlyOwner returns (bytes32 vaultHash) {
+    function createVault(VaultParams calldata _params, uint256 protocolFeeRate)
+        external
+        onlyOwner
+        returns (bytes32 vaultHash)
+    {
         if (_params.cycleDuration == 0) revert ZeroCycleDuration();
         if (_params.startTime == 0) revert ZeroStartTime();
         if (_params.collateralAsset == address(0)) revert ZeroAddress();
@@ -412,6 +440,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (_params.strikeAsset == address(0)) revert ZeroAddress();
         _requireValidSignedBps(_params.strikePriceBps);
         _requireValidSignedBps(_params.buybackPriceRatio);
+        _requireValidProtocolFeeRate(protocolFeeRate);
 
         vaultHash = keccak256(abi.encode(_params));
         if (vaults[vaultHash].params.cycleDuration != 0) revert VaultAlreadyExists();
@@ -421,6 +450,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         st.isActive = true;
         st.currentCycleId = 1;
         st.currentCycleStart = _params.startTime;
+        st.protocolFeeRate = protocolFeeRate;
 
         // Fresh mappings default to zero, so only write the non-zero accumulator seed here.
         cumCollateral[vaultHash][0] = PRECISION;
@@ -439,13 +469,18 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
             _params.startTime,
             _params.strikePriceBps,
             _params.minPrincipalRatio,
-            _params.buybackPriceRatio
+            _params.buybackPriceRatio,
+            protocolFeeRate
         );
     }
 
     function _requireValidSignedBps(int256 ratio) internal pure {
         // Keep all signed vault ratios within +/-100% so off-chain config mistakes fail fast.
         if (ratio < -MAX_SIGNED_BPS || ratio > MAX_SIGNED_BPS) revert();
+    }
+
+    function _requireValidProtocolFeeRate(uint256 protocolFeeRate) internal pure {
+        if (protocolFeeRate > PROTOCOL_FEE_RATE_BASE) revert();
     }
 
     function setVaultActive(bytes32 vaultHash, bool _active) external onlyOwner vaultExists(vaultHash) {
@@ -458,6 +493,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     function setVaultEnd(bytes32 vaultHash, bool _end) external onlyOwner vaultExists(vaultHash) {
         vaults[vaultHash].isEnd = _end;
+    }
+
+    function setVaultProtocolFeeRate(bytes32 vaultHash, uint256 protocolFeeRate)
+        external
+        onlyOwner
+        vaultExists(vaultHash)
+    {
+        _requireValidProtocolFeeRate(protocolFeeRate);
+        uint256 oldRate = vaults[vaultHash].protocolFeeRate;
+        vaults[vaultHash].protocolFeeRate = protocolFeeRate;
+        emit VaultProtocolFeeRateChanged(vaultHash, oldRate, protocolFeeRate);
     }
 
     function pauseVault(bytes32 vaultHash) external onlyOperator vaultExists(vaultHash) {
@@ -475,16 +521,21 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         vaultSigner = _signer;
     }
 
-    function setMarginPool(address _marginPool) external onlyOwner {
-        if (_marginPool == address(0)) revert ZeroAddress();
-        marginPool = _marginPool;
+    function marginPool() public view returns (address) {
+        return enhancedOptions.marginPool();
+    }
+
+    function setProtocolFeeRecipient(address _recipient) external onlyOwner {
+        if (_recipient == address(0)) revert ZeroAddress();
+        protocolFeeRecipient = _recipient;
     }
 
     /// @notice sets approval for the margin pool to remove funds for an asset
     function setAssetApprovalMarginPool(address _asset, bool _approval) external {
         _checkOwner();
-        if (marginPool == address(0)) revert ZeroAddress();
-        _forceApprove(_asset, marginPool, _approval ? type(uint256).max : 0);
+        address marginPool_ = marginPool();
+        if (marginPool_ == address(0)) revert ZeroAddress();
+        _forceApprove(_asset, marginPool_, _approval ? type(uint256).max : 0);
     }
 
     /// @notice kept for deployment compatibility; buyback now grants per-swap router allowance
@@ -523,6 +574,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         _requireUserWritable(vaultHash);
         _requireOpenPhase(vaultHash);
+        _requireNoExitAllPending(vaultHash, user);
         if (amount < st.params.minInvestmentAmount) revert BelowMinInvestment();
         if (st.totalDeposited + amount > st.params.capacity) revert CapacityExceeded();
 
@@ -532,6 +584,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (!fund.exists) {
             fund.exists = true;
             fund.buybackEnabled = false;
+            fund.autoBuyEnabled = true;
         }
         fund.pendingActivePrincipal += amount;
         fund.initialAmountTotal += amount;
@@ -579,20 +632,44 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
      *         The effective withdraw amount is clamped during queue processing
      *         after settled-cycle principal scaling is applied.
      */
-    function withdraw(bytes32 vaultHash, uint256 amount) external nonReentrant vaultExists(vaultHash) {
-        if (amount == 0) revert ZeroAmount();
+    function withdraw(bytes32 vaultHash, uint256 amount) external {
+        withdraw(vaultHash, amount, false);
+    }
 
+    function withdraw(bytes32 vaultHash, uint256 amount, bool isExitAll) public nonReentrant vaultExists(vaultHash) {
         _requireActiveAndNotPaused(vaultHash);
-        if (vaultPhases[vaultHash] == CyclePhase.ENDED) revert InvalidCyclePhase();
+        _requireOpenPhase(vaultHash);
         UserFund storage fund = userFunds[vaultHash][msg.sender];
+
+        _requireNoExitAllPending(vaultHash, msg.sender);
+
+        if (isExitAll) {
+            if (amount != 0) revert ZeroAmount();
+            if (
+                fund.activePrincipal == 0 && fund.pendingActivePrincipal == 0 && fund.systemPausedPrincipal == 0
+                    && fund.stoppedPrincipal == 0
+            ) {
+                revert NotActive();
+            }
+            uint256 exitAllRecordId = _addPendingWithdrawRequest(vaultHash, msg.sender, 0, true);
+            pendingExitAllRequestId[vaultHash][msg.sender] = exitAllRecordId;
+            _enqueueUser(vaultHash, msg.sender);
+            emit WithdrawRequested(vaultHash, msg.sender, exitAllRecordId, 0);
+            return;
+        }
+
+        if (amount == 0) revert ZeroAmount();
         // System-pause fast path: user has pre-settled funds, bypass queue.
         if (fund.systemPausedPrincipal > 0) {
             if (amount > fund.systemPausedPrincipal) revert InsufficientPendingAmount();
+            uint256 settledCycleId = _settledCycleId(vaultHash);
+            uint256 principalBeforeExit = _projectSettledActive(fund, cumCollateral[vaultHash][settledCycleId])
+                + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+            _reduceInitialAmountProRata(fund, amount, principalBeforeExit);
             fund.systemPausedPrincipal -= amount;
             unchecked {
                 fund.stoppedPrincipal += amount;
             }
-            fund.initialAmountTotal = fund.initialAmountTotal >= amount ? fund.initialAmountTotal - amount : 0;
             uint256 _recordId = _addPendingWithdraw(vaultHash, msg.sender, amount);
             emit WithdrawRequested(vaultHash, msg.sender, _recordId, amount);
             return;
@@ -601,21 +678,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.pendingWithdrawAmount += amount;
         // Capacity enforcement lives in _addPendingWithdrawRequest to avoid duplicating the same
         // runtime-size-expensive check in both the public entrypoint and the record constructor.
-        uint256 recordId = _addPendingWithdrawRequest(vaultHash, msg.sender, amount);
+        uint256 recordId = _addPendingWithdrawRequest(vaultHash, msg.sender, amount, false);
 
-        CyclePhase phase = vaultPhases[vaultHash];
-        if (phase == CyclePhase.OPEN) {
-            _enqueueUser(vaultHash, msg.sender);
-        } else if (phase == CyclePhase.SETTLED) {
-            CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
-            bool willProcessInCurrentSnapshot =
-                queued[vaultHash][msg.sender] && _processedQueueCycle[vaultHash][msg.sender] != advance.settledCycleId;
-            if (!willProcessInCurrentSnapshot) {
-                _markDeferredQueueUser(vaultHash, msg.sender);
-            }
-        } else {
-            _markDeferredQueueUser(vaultHash, msg.sender);
-        }
+        _enqueueUser(vaultHash, msg.sender);
 
         emit WithdrawRequested(vaultHash, msg.sender, recordId, amount);
     }
@@ -630,8 +695,12 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         UserFund storage fund = userFunds[vaultHash][msg.sender];
-        if (fund.pendingWithdrawAmount < rec.amount) revert InsufficientPendingAmount();
-        fund.pendingWithdrawAmount -= rec.amount;
+        if (!rec.isExitAll) {
+            if (fund.pendingWithdrawAmount < rec.amount) revert InsufficientPendingAmount();
+            fund.pendingWithdrawAmount -= rec.amount;
+        } else if (pendingExitAllRequestId[vaultHash][msg.sender] == recordId) {
+            delete pendingExitAllRequestId[vaultHash][msg.sender];
+        }
 
         emit FundRecordCanceled(vaultHash, msg.sender, recordId, rec.recordType, rec.amount);
         _removePendingWithdrawRequest(vaultHash, msg.sender, recordId);
@@ -658,7 +727,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     /**
      * @notice Claim materialized premium (strikeAsset) accumulated from option selling.
      *         Only claimable when the vault is active and not paused.
-     *         Un-materialized premium (not yet processed by queue) must wait for queue processing first.
+     *         Settled premium and current-cycle premium already received by the vault are materialized on demand.
      *
      * @param vaultHash  Target vault
      * @param amount        Amount of strikeAsset to claim (must be <= materializedPremium)
@@ -669,9 +738,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         VaultState storage st = vaults[vaultHash];
         UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (fund.autoBuyEnabled || fund.buybackEnabled) revert AutoBuyPremiumClaimDisabled();
 
-        uint256 settledCycleId = _settledCycleId(vaultHash);
-        uint256 cycleCumPremium = cumPremium[vaultHash][settledCycleId];
+        uint256 cycleCumPremium = _premiumAccumulator(vaultHash);
         uint256 premium = _materializeProjectedPremium(fund, cycleCumPremium);
         if (premium > 0) {
             fund.entryCumPremium = cycleCumPremium;
@@ -717,9 +786,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         fund.entryCumCollateral = 0;
         fund.pendingActivePrincipal = 0;
         fund.systemPausedPrincipal = 0;
-        uint256 directPrincipal = pendingAmount + systemPausedAmount;
-        fund.initialAmountTotal =
-            fund.initialAmountTotal >= directPrincipal ? fund.initialAmountTotal - directPrincipal : 0;
+        _reduceInitialAmountProRata(fund, totalAmount, totalAmount);
 
         _releaseCollateral(st, msg.sender, totalAmount);
         // emit ClaimedActive(vaultHash, msg.sender, totalAmount);
@@ -730,6 +797,25 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (!fund.exists) revert FundNotFound();
         fund.buybackEnabled = enabled;
         emit BuybackEnabledSet(vaultHash, msg.sender, enabled);
+    }
+
+    function setAutoBuyEnabled(bytes32 vaultHash, bool enabled) external vaultExists(vaultHash) {
+        UserFund storage fund = userFunds[vaultHash][msg.sender];
+        if (!fund.exists) revert FundNotFound();
+        fund.autoBuyEnabled = enabled;
+        emit AutoBuyEnabledSet(vaultHash, msg.sender, enabled);
+    }
+
+    function claimProtocolFees(bytes32 vaultHash) external nonReentrant vaultExists(vaultHash) {
+        address recipient = protocolFeeRecipient;
+        if (msg.sender != owner() && msg.sender != recipient) revert();
+        if (recipient == address(0)) revert ZeroAddress();
+
+        uint256 amount = protocolFeeAccrued[vaultHash];
+        if (amount == 0) revert ZeroAmount();
+        protocolFeeAccrued[vaultHash] = 0;
+
+        _transferAsset(vaults[vaultHash].params.collateralAsset, recipient, amount);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -764,13 +850,18 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         if (users.length == 0 || users.length > MAX_BATCH_SIZE) revert InvalidBatchSize();
         if (swapParams.amountIn == 0) revert ZeroAmount();
         VaultState storage st = vaults[vaultHash];
+        uint256 cycleCumPremium = _premiumAccumulator(vaultHash);
         uint256 itemLen = users.length;
         uint256 totalAvailablePremium;
         uint256[] memory availablePremiums = new uint256[](itemLen);
 
         for (uint256 i; i < itemLen;) {
             UserFund storage fund = userFunds[vaultHash][users[i]];
-            if (!fund.buybackEnabled) revert BuybackDisabled(users[i]);
+            if (!(fund.buybackEnabled || fund.autoBuyEnabled)) revert BuybackDisabled(users[i]);
+            uint256 premium = _materializeProjectedPremium(fund, cycleCumPremium);
+            if (premium > 0) {
+                fund.entryCumPremium = cycleCumPremium;
+            }
             uint256 available = fund.materializedPremium;
             if (available == 0) revert InsufficientPremium();
             availablePremiums[i] = available;
@@ -803,6 +894,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
                 })
             );
 
+        st.totalDeposited += amountOut;
         _allocateBuybackToUsers(vaultHash, users, premiumSpent, swapParams.amountIn, amountOut);
 
         emit BuybackExecuted(vaultHash, swapParams.amountIn, amountOut);
@@ -938,17 +1030,22 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 cycleCumPremium
     ) internal returns (int256 activeDelta) {
         UserFund storage fund = userFunds[vaultHash][user];
+        uint256 exitAllRequestId = pendingExitAllRequestId[vaultHash][user];
         if (
             fund.activePrincipal == 0 && fund.pendingActivePrincipal == 0 && fund.pendingWithdrawAmount == 0
-                && fund.entryCumCollateral == 0 && fund.entryCumPremium == 0
+                && exitAllRequestId == 0 && fund.entryCumCollateral == 0 && fund.entryCumPremium == 0
         ) {
             return 0;
         }
         VaultState storage st = vaults[vaultHash];
         uint256 settledActive = _projectSettledActive(fund, cycleCumCollateral);
         _materializeProjectedPremium(fund, cycleCumPremium);
+        if (exitAllRequestId != 0) {
+            return _processExitAllQueuedUser(vaultHash, user, exitAllRequestId, settledActive);
+        }
         uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
-        fund.initialAmountTotal = fund.initialAmountTotal >= stopAmount ? fund.initialAmountTotal - stopAmount : 0;
+        uint256 principalBeforeExit = settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+        _reduceInitialAmountProRata(fund, stopAmount, principalBeforeExit);
 
         uint256 remainingActive = settledActive - stopAmount;
         unchecked {
@@ -992,6 +1089,31 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         }
 
         return int256(newActive) - int256(settledActive);
+    }
+
+    function _processExitAllQueuedUser(bytes32 vaultHash, address user, uint256 requestId, uint256 settledActive)
+        internal
+        returns (int256 activeDelta)
+    {
+        EnhancedVaultRecordsLib.processExitAllQueuedUser(
+            pendingDepositIds[vaultHash][user],
+            pendingDepositRecords[vaultHash][user],
+            pendingDepositIndex[vaultHash][user],
+            pendingWithdrawRequestIds[vaultHash][user],
+            pendingWithdrawRequestRecords[vaultHash][user],
+            pendingWithdrawRequestIndex[vaultHash][user],
+            pendingWithdrawIds[vaultHash][user],
+            pendingWithdrawRecords[vaultHash][user],
+            pendingWithdrawIndex[vaultHash][user],
+            userFunds,
+            vaults,
+            vaultHash,
+            user,
+            requestId,
+            settledActive
+        );
+        delete pendingExitAllRequestId[vaultHash][user];
+        return -int256(settledActive);
     }
 
     function _convertPendingDepositRecordsToWithdraw(bytes32 vaultHash, address user)
@@ -1041,28 +1163,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
     }
 
-    function _convertSingleWithdrawRequestRecord(
-        bytes32 vaultHash,
-        address user,
-        uint256 withdrawRequestId,
-        uint256 available
-    ) internal returns (uint256 converted) {
-        return EnhancedVaultRecordsLib.convertSingleWithdrawRequestRecord(
-            pendingWithdrawRequestRecords[vaultHash][user],
-            pendingWithdrawRequestIndex[vaultHash][user],
-            pendingWithdrawRequestIds[vaultHash][user],
-            pendingWithdrawRecords[vaultHash][user],
-            pendingWithdrawIndex[vaultHash][user],
-            pendingWithdrawIds[vaultHash][user],
-            userFunds,
-            vaults,
-            vaultHash,
-            user,
-            withdrawRequestId,
-            available
-        );
-    }
-
     function _nextRecordId(bytes32 vaultHash, address user) internal returns (uint256 recordId) {
         return EnhancedVaultRecordsLib.nextRecordId(userFunds, vaultHash, user);
     }
@@ -1080,7 +1180,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
     }
 
-    function _addPendingWithdrawRequest(bytes32 vaultHash, address user, uint256 amount)
+    function _addPendingWithdrawRequest(bytes32 vaultHash, address user, uint256 amount, bool isExitAll)
         internal
         returns (uint256 recordId)
     {
@@ -1093,11 +1193,19 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
             vaults,
             vaultHash,
             user,
-            amount
+            amount,
+            isExitAll
         );
     }
 
     function _addPendingWithdraw(bytes32 vaultHash, address user, uint256 amount) internal returns (uint256 recordId) {
+        return _addPendingWithdraw(vaultHash, user, amount, false);
+    }
+
+    function _addPendingWithdraw(bytes32 vaultHash, address user, uint256 amount, bool isExitAll)
+        internal
+        returns (uint256 recordId)
+    {
         return EnhancedVaultRecordsLib.addPendingWithdraw(
             userFunds,
             pendingWithdrawIds[vaultHash][user],
@@ -1106,7 +1214,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
             vaults,
             vaultHash,
             user,
-            amount
+            amount,
+            isExitAll
         );
     }
 
@@ -1144,10 +1253,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 recordId
     ) internal {
         EnhancedVaultRecordsLib.removePendingRecord(ids, indexMap, recordMap, recordId);
-    }
-
-    function _copyIds(uint256[] storage ids) internal view returns (uint256[] memory out) {
-        return EnhancedVaultRecordsLib.copyIds(ids);
     }
 
     function _applyUserActiveDelta(bytes32 vaultHash, uint256 nextId, int256 delta) internal {
@@ -1232,8 +1337,9 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
             delete _cycleAdvanceStates[vaultHash];
         }
 
-        _resetTransitionQueue(queue, 0);
-        _flushDeferredQueueUsers(vaultHash, false);
+        queue.queueLenSnapshot = 0;
+        queue.processedCount = 0;
+        queue.queueCycleId = 0;
         vaultPhases[vaultHash] = CyclePhase.ENDED;
         emit VaultTerminated(vaultHash);
     }
@@ -1266,13 +1372,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
                 continue;
             }
             uint256 settledActive = _projectSettledActive(fund, cycleCumCollateral);
-            if (!_isBelowMinPrincipalRatio(st, settledActive, fund.initialAmountTotal)) {
+            (uint256 previewStopAmount, uint256 candidatePrincipal) =
+                _previewPrincipalCandidateAfterWithdrawConversion(fund, settledActive);
+            if (!_isBelowMinPrincipalRatio(st, candidatePrincipal, fund.initialAmountTotal)) {
                 revert UserNotBelowMinPrincipalRatio(user);
             }
             _materializeProjectedPremium(fund, cycleCumPremium);
 
             uint256 stopAmount = _convertWithdrawRequestRecordsToWithdraw(vaultHash, user, settledActive);
-            fund.initialAmountTotal = fund.initialAmountTotal >= stopAmount ? fund.initialAmountTotal - stopAmount : 0;
+            if (stopAmount != previewStopAmount) revert WithdrawConversionPreviewMismatch();
+            uint256 principalBeforeExit = settledActive + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
+            _reduceInitialAmountProRata(fund, stopAmount, principalBeforeExit);
             unchecked {
                 fund.stoppedPrincipal += stopAmount;
             }
@@ -1300,6 +1410,15 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     function _projectSettledActive(UserFund storage fund, uint256 cycleCumCollateral) internal view returns (uint256) {
         if (fund.activePrincipal == 0 || fund.entryCumCollateral == 0) return fund.activePrincipal;
         return fund.activePrincipal * cycleCumCollateral / fund.entryCumCollateral;
+    }
+
+    function _previewPrincipalCandidateAfterWithdrawConversion(UserFund storage fund, uint256 settledActive)
+        internal
+        view
+        returns (uint256 stopAmount, uint256 candidatePrincipal)
+    {
+        stopAmount = fund.pendingWithdrawAmount > settledActive ? settledActive : fund.pendingWithdrawAmount;
+        candidatePrincipal = settledActive - stopAmount + fund.pendingActivePrincipal + fund.systemPausedPrincipal;
     }
 
     function _projectPremium(UserFund storage fund, uint256 cycleCumPremium) internal view returns (uint256) {
@@ -1331,6 +1450,19 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         return int256(principalRatio) < int256(st.params.minPrincipalRatio);
     }
 
+    function _reduceInitialAmountProRata(UserFund storage fund, uint256 exitAmount, uint256 principalBeforeExit)
+        internal
+    {
+        uint256 initialAmountTotal = fund.initialAmountTotal;
+        if (exitAmount == 0 || initialAmountTotal == 0) return;
+        if (principalBeforeExit == 0 || exitAmount >= principalBeforeExit) {
+            fund.initialAmountTotal = 0;
+            return;
+        }
+        uint256 basisReduction = Math.mulDiv(initialAmountTotal, exitAmount, principalBeforeExit);
+        fund.initialAmountTotal = initialAmountTotal - basisReduction;
+    }
+
     function _settlePreviousCycle(bytes32 vaultHash) internal {
         if (vaultPhases[vaultHash] != CyclePhase.OPEN) revert InvalidCyclePhase();
         VaultState storage st = vaults[vaultHash];
@@ -1340,7 +1472,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         CycleSettlement memory settled = _settleCycleAndUpdateAccumulators(vaultHash, cycleId, st);
         uint256 nextId = cycleId + 1;
 
-        uint256 capReduction = _advanceCycleState(vaultHash, cycleId, nextId, settled.activeCol, settled.totalReturned);
+        uint256 capReduction =
+            _advanceCycleState(vaultHash, cycleId, nextId, settled.activeCol, settled.netActiveCollateral);
 
         CycleAdvanceState storage advance = _cycleAdvanceStates[vaultHash];
         advance.settledCycleId = cycleId;
@@ -1363,7 +1496,6 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         TransitionQueue storage queue = _transitionQueues[vaultHash];
-        queue.queueLenSnapshot = queue.users.length;
         queue.processedCount = 0;
         queue.queueCycleId = cycleId;
         vaultPhases[vaultHash] = queue.queueLenSnapshot == 0 ? CyclePhase.PROCESSING_DONE : CyclePhase.SETTLED;
@@ -1391,8 +1523,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         );
 
         delete _cycleAdvanceStates[vaultHash];
-        _resetTransitionQueue(queue, st.currentCycleId);
-        _flushDeferredQueueUsers(vaultHash, true);
+        queue.queueLenSnapshot = 0;
+        queue.processedCount = 0;
 
         vaultPhases[vaultHash] = CyclePhase.OPEN;
     }
@@ -1402,7 +1534,16 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         returns (CycleSettlement memory settled)
     {
         return EnhancedVaultCycleLib.settleCycleAndUpdateAccumulators(
-            enhancedOptions, _vaultIds, _cyclePremium, cycleRecords, cumCollateral, cumPremium, vaultHash, cycleId, st
+            enhancedOptions,
+            _vaultIds,
+            _cyclePremium,
+            cycleRecords,
+            cumCollateral,
+            cumPremium,
+            protocolFeeAccrued,
+            vaultHash,
+            cycleId,
+            st
         );
     }
 
@@ -1426,7 +1567,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         vaultExists(vaultHash)
     {
         _requireActiveAndNotPaused(vaultHash);
-        if (vaultPhases[vaultHash] == CyclePhase.ENDED) revert InvalidCyclePhase();
+        _requireOpenPhase(vaultHash);
         VaultState storage st = vaults[vaultHash];
         uint256 orderCollateral = _validateCreateOrder(st, vaultHash, payload, vaultSig);
 
@@ -1440,6 +1581,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
         _vaultIds[vaultHash][st.currentCycleId].push(vaultId);
         _cyclePremium[vaultHash] += premium;
+        rec.totalPremium += premium;
+        rec.premiumRatio = rec.totalActiveCollateral == 0 ? 0 : rec.totalPremium * PRECISION / rec.totalActiveCollateral;
         emit OrderCreated(vaultHash, vaultId);
     }
 
@@ -1456,25 +1599,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
             revert InvalidSignature();
         }
 
-        (
-            /* Quote */,
-            Parser.Confirmation memory conf,
-            /* quoteSig */,
-            /* confSig */,
-            /* fee */
-        ) = Parser.parseQuoteAndConfirmation(payload);
-
-        if (uint256(conf.expiry) < block.timestamp) revert ExpiryInPast();
-        uint256 expectedExpiry = st.currentCycleStart + st.params.cycleDuration;
-        if (conf.taker != address(this)) revert WrongTaker();
-        if (uint256(conf.expiry) != expectedExpiry) revert WrongExpiry();
-        if (conf.isPhysicallySettled) revert MustBeCashSettled();
-        if (conf.assetAddress != st.params.underlyingAsset) revert WrongUnderlying();
-        if (conf.collateralAsset != st.params.collateralAsset) revert WrongCollateral();
-        if (conf.usd != st.params.strikeAsset) revert WrongStrikeAsset();
-        if (conf.isPut != st.params.isPut) revert WrongOptionType();
-
-        return conf.collateralAmount;
+        return EnhancedVaultCycleLib.validateOrder(st.params, payload, st.currentCycleStart, address(this));
     }
 
     function _advanceCycleState(
@@ -1482,10 +1607,10 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 cycleId,
         uint256 nextId,
         uint256 activeCol,
-        uint256 totalReturned
+        uint256 netActiveCollateral
     ) internal returns (uint256 capReduction) {
         return EnhancedVaultCycleLib.advanceCycleState(
-            cycleRecords, vaultHash, cycleId, nextId, activeCol, totalReturned
+            cycleRecords, vaultHash, cycleId, nextId, activeCol, netActiveCollateral
         );
     }
 
@@ -1504,7 +1629,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     {
         TransitionQueue storage queue = _transitionQueues[vaultHash];
         phase = vaultPhases[vaultHash];
-        queueLen = phase == CyclePhase.OPEN ? queue.users.length : queue.queueLenSnapshot;
+        queueLen = queue.queueLenSnapshot;
         processedCount = queue.processedCount;
         remaining = queueLen > processedCount ? queueLen - processedCount : 0;
         canStartNextCycle = phase == CyclePhase.PROCESSING_DONE && remaining == 0;
@@ -1512,7 +1637,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
 
     function getQueueUsers(bytes32 vaultHash, uint256 offset, uint256 limit) external view returns (address[] memory) {
         TransitionQueue storage queue = _transitionQueues[vaultHash];
-        uint256 len = queue.users.length;
+        uint256 len = queue.queueLenSnapshot;
         if (offset >= len || limit == 0) return new address[](0);
 
         uint256 end = offset + limit;
@@ -1552,7 +1677,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         uint256 settledCycleId = _settledCycleId(vaultHash);
         UserFund storage fund = userFunds[vaultHash][user];
 
-        uint256 cycleCumPremium = cumPremium[vaultHash][settledCycleId];
+        uint256 cycleCumPremium = _premiumAccumulator(vaultHash);
 
         // Scaled active balance (collateralAsset)
         pos.activeBalance = _projectSettledActive(fund, cumCollateral[vaultHash][settledCycleId]);
@@ -1560,6 +1685,7 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         // Pending amounts (no scaling — not yet active)
         pos.pendingDeposit = fund.pendingActivePrincipal;
         pos.pendingWithdrawAmount = fund.pendingWithdrawAmount;
+        if (pendingExitAllRequestId[vaultHash][user] != 0) pos.pendingWithdrawAmount = pos.activeBalance;
 
         // Already-claimable collateral amounts
         pos.claimableWithdraw = fund.stoppedPrincipal;
@@ -1572,12 +1698,15 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         pos.projectedPremium = pos.claimablePremium + _projectPremium(fund, cycleCumPremium);
     }
 
-    function _buildPendingRecords(uint256[] storage ids, mapping(uint256 => FundRecord) storage records)
-        internal
-        view
-        returns (FundRecord[] memory out)
-    {
-        return EnhancedVaultRecordsLib.buildPendingRecords(ids, records);
+    function _premiumAccumulator(bytes32 vaultHash) internal view returns (uint256 cycleCumPremium) {
+        uint256 settledCycleId = _settledCycleId(vaultHash);
+        cycleCumPremium = cumPremium[vaultHash][settledCycleId];
+        if (vaultPhases[vaultHash] != CyclePhase.OPEN) return cycleCumPremium;
+
+        CycleRecord storage rec = cycleRecords[vaultHash][vaults[vaultHash].currentCycleId];
+        if (rec.premiumRatio == 0) return cycleCumPremium;
+
+        cycleCumPremium += rec.premiumRatio * cumCollateral[vaultHash][settledCycleId] / PRECISION;
     }
 
     function _settledCycleId(bytes32 vaultHash) internal view returns (uint256 settledCycleId) {
@@ -1606,25 +1735,8 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
         IERC20(asset).safeTransfer(to, amount);
     }
 
-    function _resetTransitionQueue(TransitionQueue storage queue, uint256 queueCycleId) internal {
-        delete queue.users;
-        queue.queueLenSnapshot = 0;
-        queue.processedCount = 0;
-        queue.queueCycleId = queueCycleId;
-    }
-
-    function _flushDeferredQueueUsers(bytes32 vaultHash, bool enqueueUsers) internal {
-        address[] storage deferredUsers = _deferredQueueUsers[vaultHash];
-        uint256 deferredLen = deferredUsers.length;
-        for (uint256 i; i < deferredLen;) {
-            address user = deferredUsers[i];
-            _deferredQueued[vaultHash][user] = false;
-            if (enqueueUsers) _enqueueUser(vaultHash, user);
-            unchecked {
-                ++i;
-            }
-        }
-        delete _deferredQueueUsers[vaultHash];
+    function _requireNoExitAllPending(bytes32 vaultHash, address user) internal view {
+        if (pendingExitAllRequestId[vaultHash][user] != 0) revert();
     }
 
     function _requireActive(bytes32 vaultHash) internal view {
@@ -1653,13 +1765,17 @@ contract EnhancedVault is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard
     function _enqueueUser(bytes32 vaultHash, address user) internal {
         if (queued[vaultHash][user]) return;
         queued[vaultHash][user] = true;
-        _transitionQueues[vaultHash].users.push(user);
-        // emit UserQueued(vaultHash, user);
-    }
 
-    function _markDeferredQueueUser(bytes32 vaultHash, address user) internal {
-        if (_deferredQueued[vaultHash][user]) return;
-        _deferredQueued[vaultHash][user] = true;
-        _deferredQueueUsers[vaultHash].push(user);
+        TransitionQueue storage queue = _transitionQueues[vaultHash];
+        uint256 index = queue.queueLenSnapshot;
+        if (index < queue.users.length) {
+            queue.users[index] = user;
+        } else {
+            queue.users.push(user);
+        }
+        unchecked {
+            queue.queueLenSnapshot = index + 1;
+        }
+        // emit UserQueued(vaultHash, user);
     }
 }

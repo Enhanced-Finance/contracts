@@ -14,16 +14,16 @@ contract ConfigureMMarket is Script {
         string memory chainIdStr = vm.toString(chainId);
         string memory deployPath = string.concat(vm.projectRoot(), "/.deploy/", chainIdStr, ".json");
         string memory configPath = string.concat(vm.projectRoot(), "/config/", chainIdStr, ".json");
-        
+
         require(vm.isFile(deployPath), "Deploy file not found");
         require(vm.isFile(configPath), "Config file not found");
-        
+
         string memory deployJson = vm.readFile(deployPath);
         string memory configJson = vm.readFile(configPath);
 
         address mmarketAddr = deployJson.readAddress(".MMarket.proxyAddress");
         require(mmarketAddr != address(0), "MMarket proxy not found");
-        
+
         // MMarket mmarket = MMarket(mmarketAddr); // MMarket doesn't have public getter for operator in the provided interface snippet
         // We assume we can set it blindly or if we had a getter we'd check.
         // Assuming setOperator is present.

@@ -28,7 +28,7 @@ library Actions {
     struct ActionArgs {
         // type of action that is being performed on the system
         ActionType actionType;
-        // address of the account owner
+        // address of the account owner; for Redeem this is the physical settlement payer
         address owner;
         // address which we move assets from or to (depending on the action type)
         address secondAddress;
@@ -103,6 +103,8 @@ library Actions {
     }
 
     struct RedeemArgs {
+        // address that pays physical settlement exercise assets
+        address payer;
         // address to which we pay out the oToken proceeds
         address receiver;
         // oToken that is to be redeemed
@@ -269,9 +271,11 @@ library Actions {
      */
     function _parseRedeemArgs(ActionArgs memory _args) internal pure returns (RedeemArgs memory) {
         require(_args.actionType == ActionType.Redeem, "A13");
+        require(_args.owner != address(0), "A22");
         require(_args.secondAddress != address(0), "A14");
 
-        return RedeemArgs({receiver: _args.secondAddress, otoken: _args.asset, amount: _args.amount});
+        return
+            RedeemArgs({payer: _args.owner, receiver: _args.secondAddress, otoken: _args.asset, amount: _args.amount});
     }
 
     /**
@@ -303,41 +307,5 @@ library Actions {
             amount: _args.amount,
             roundId: roundId
         });
-    }
-
-    function _constructFlashLoanRedeemActionArgs(bytes calldata packedEncodedArgs)
-        internal
-        view
-        returns (ActionArgs memory, address, bytes memory, uint256)
-    {
-        uint256 len;
-        address otoken;
-        uint256 amount;
-        address redeemer;
-        uint256 maxAmountIn;
-        bytes memory uniswapRoute;
-
-        len = packedEncodedArgs.length;
-        otoken = address(bytes20(packedEncodedArgs[0:20]));
-        amount = uint256(bytes32(packedEncodedArgs[20:52]));
-        redeemer = address(bytes20(packedEncodedArgs[52:72]));
-        maxAmountIn = uint256(bytes32(packedEncodedArgs[72:104]));
-        uniswapRoute = packedEncodedArgs[104:len];
-
-        return (
-            ActionArgs({
-                actionType: Actions.ActionType.Redeem,
-                owner: address(0),
-                secondAddress: address(this), // redeem receiver is enhanced contract so funds can be swapped to repay loan
-                asset: otoken,
-                vaultId: 0,
-                amount: amount,
-                index: 0,
-                data: bytes("")
-            }),
-            redeemer,
-            uniswapRoute,
-            maxAmountIn
-        );
     }
 }

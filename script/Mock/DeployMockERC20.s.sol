@@ -9,9 +9,9 @@ contract DeployMockERC20 is Script {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
 
-        string memory name = vm.envOr("MOCK_NAME", string("Tether USD"));
-        string memory symbol = vm.envOr("MOCK_SYMBOL", string("USDT"));
-        uint8 decimals = 6;
+        string memory name = vm.envOr("MOCK_NAME", string("Wrapped BTC"));
+        string memory symbol = vm.envOr("MOCK_SYMBOL", string("WBTC"));
+        uint8 decimals = 18;
 
         console.log("Deploying MockERC20...");
         console.log("Name:", name);

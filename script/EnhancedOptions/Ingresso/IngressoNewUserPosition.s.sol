@@ -13,22 +13,22 @@ contract IngressoNewUserPosition is Script {
     // --- Configuration: Set these values before running ---
     // Example values provided
     address ASSET_ADDRESS = vm.envAddress("UNDERLYING"); // Underlying asset address (e.g., TWSEI)
-    uint256 constant CHAIN_ID = 1328; // Chain ID
-    bool constant IS_PUT = false; // true = Put option, false = Call option
+    uint256 constant CHAIN_ID = 11155111; // Chain ID
+    bool constant IS_PUT = true; // true = Put option, false = Call option
     bool constant IS_PHYSICALLY_SETTLED = false; // true = Physical settlement, false = Cash settlement
-    uint256 constant STRIKE = 6670000; // 2000 * 1e8;  Strike price, fixed 8 decimals (e.g., 2000 USDC = 2000e8)
-    uint64 constant EXPIRY = 1772792700; // Expiry timestamp (seconds)
-    // address constant MAKER = ...; // Derived from MAKER_PRIVATE_KEY
-    uint64 constant NONCE = 6; // Transaction Nonce to prevent replay attacks
-    uint256 constant PRICE = 687e12; // Quote price (Option Premium), 18 decimals
-    uint256 constant QUOTE_QUANTITY = 1000000 * 1e18; // Quoted size in the maker quote, 18 decimals
-    uint256 constant QUANTITY = 1000000 * 1e18; // Purchase quantity, 18 decimals (1 unit = 1e18)
+    uint256 constant STRIKE = 5_000 * 1e8; // Strike price, fixed 8 decimals (4000 STRIKE = 4000e8)
+    uint64 constant EXPIRY = 1780996200; // Expiry timestamp (seconds)
+    uint64 constant NONCE = 2; // Transaction Nonce to prevent replay attacks
+    uint256 constant PRICE = 100 * 1e18; // Quote price per 1 option (Option Premium), 18 decimals
+    uint256 constant QUOTE_QUANTITY = 10 * 1e18; // Quoted size in the maker quote, 18 decimals
+    uint256 constant QUANTITY = 10 * 1e18; // Purchase quantity, 18 decimals (1 unit = 1e18)
     bool constant IS_TAKER_BUY = true; // true = Taker buys (Maker sells), false = Taker sells (Maker buys)
     uint64 constant VALID_UNTIL = 1800000000; // Expiration timestamp for this quote
-    address constant USD = 0x134b5f74d65a34eb6F9CdaD5eD664b45A167cC43; // Quote asset/Stablecoin address (e.g., TUSDT)
-    address COLLATERAL_ASSET = vm.envAddress("UNDERLYING"); // Collateral asset address (usually Underlying for Call, Stablecoin for Put)
-    uint256 constant COLLATERAL_AMOUNT = 1000000 * 1e18; // Collateral amount, decimals depend on the asset (e.g., 1 WETH = 1e18)
-    uint256 constant FEE = 687e16; // Transaction fee (if any)
+    address USD = vm.envAddress("STRIKE"); // Quote asset/Stablecoin address (e.g., TUSDT)
+    address COLLATERAL_ASSET = vm.envAddress("STRIKE"); // Collateral asset address (usually Underlying for Call, Stablecoin for Put)
+    uint256 constant COLLATERAL_AMOUNT = 50_000 * 1e6; // Put collateral in STRIKE native decimals (6)
+    uint256 constant MAKER_FEE = 0; // Maker-side transaction fee (if any)
+    uint256 constant TAKER_FEE = 0; // Taker-side transaction fee deducted from premium (if any)
     // ----------------------------------------------------
 
     bytes32 constant QUOTE_TYPEHASH = keccak256(
@@ -144,8 +144,8 @@ contract IngressoNewUserPosition is Script {
         bytes memory confSig = abi.encodePacked(r, s, v);
 
         // 5. Pack Payload
-        // Manual packing to match Parser.sol expected layout (361 bytes)
-        bytes memory payload = _packPayload(quote, confirmation, quoteSig, confSig, FEE);
+        // Manual packing to match Parser.sol expected layout (377 bytes)
+        bytes memory payload = _packPayload(quote, confirmation, quoteSig, confSig, MAKER_FEE, TAKER_FEE);
 
         // 6. Execute Transaction (Deployer/Operator)
         vm.startBroadcast(deployerPrivateKey);
@@ -222,7 +222,8 @@ contract IngressoNewUserPosition is Script {
         Parser.Confirmation memory c,
         bytes memory quoteSig,
         bytes memory confSig,
-        uint256 fee
+        uint256 protocolFee,
+        uint256 makerFee
     ) internal pure returns (bytes memory) {
         // Based on Parser.sol assembly logic:
         // 0-20: maker
@@ -244,7 +245,8 @@ contract IngressoNewUserPosition is Script {
         // 289-309: usd
         // 309-329: collateralAsset
         // 329-345: collateralAmount
-        // 345-361: fee
+        // 345-361: protocolFee
+        // 361-377: makerFee
 
         return abi.encodePacked(
             c.maker, // 20
@@ -266,7 +268,8 @@ contract IngressoNewUserPosition is Script {
             q.usd, // 20
             q.collateralAsset, // 20
             uint128(c.collateralAmount), // 16
-            uint128(fee) // 16
+            uint128(protocolFee), // 16
+            uint128(makerFee) // 16
         );
     }
 }

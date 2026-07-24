@@ -38,6 +38,15 @@ contract ConfigureEnhancedOptions is Script {
             }
         }
 
+        // 1b. Custody Operator
+        if (vm.keyExists(configJson, ".EnhancedOptions.custodyOperator")) {
+            address desiredCustodyOperator = configJson.readAddress(".EnhancedOptions.custodyOperator");
+            if (enhancedOptions.custodyOperator() != desiredCustodyOperator && desiredCustodyOperator != address(0)) {
+                console.log("Updating CustodyOperator...");
+                enhancedOptions.setCustodyOperator(desiredCustodyOperator);
+            }
+        }
+
         // 2. Controller (Check .deploy first)
         address desiredController;
         if (vm.keyExists(deployJson, ".Controller.proxyAddress")) {
@@ -86,47 +95,13 @@ contract ConfigureEnhancedOptions is Script {
             enhancedOptions.setMarginPool(desiredMarginPool);
         }
 
-        // 6. FlashLoanPool
-        if (vm.keyExists(configJson, ".EnhancedOptions.flashLoanPool")) {
-            address desiredFlashLoanPool = configJson.readAddress(".EnhancedOptions.flashLoanPool");
-            if (enhancedOptions.flashLoanPool() != desiredFlashLoanPool && desiredFlashLoanPool != address(0)) {
-                console.log("Updating FlashLoanPool...");
-                enhancedOptions.setFlashLoanPool(desiredFlashLoanPool);
-            }
-        }
-
-        // 7. SwapRouter
-        if (vm.keyExists(configJson, ".EnhancedOptions.swapRouter")) {
-            address desiredSwapRouter = configJson.readAddress(".EnhancedOptions.swapRouter");
-            if (enhancedOptions.swapRouter() != desiredSwapRouter && desiredSwapRouter != address(0)) {
-                console.log("Updating SwapRouter...");
-                enhancedOptions.setSwapRouter(desiredSwapRouter);
-            }
-        }
-
-        // 8. FeeRecipient
+        // 6. FeeRecipient
         if (vm.keyExists(configJson, ".EnhancedOptions.feeRecipient")) {
             address desiredFeeRecipient = configJson.readAddress(".EnhancedOptions.feeRecipient");
             if (enhancedOptions.feeRecipient() != desiredFeeRecipient && desiredFeeRecipient != address(0)) {
                 console.log("Updating FeeRecipient...");
                 enhancedOptions.setFeeRecipient(desiredFeeRecipient);
             }
-        }
-
-        // 9. EnhancedSigner
-        if (vm.keyExists(configJson, ".EnhancedOptions.enhancedSigner")) {
-            address desiredEnhancedSigner = configJson.readAddress(".EnhancedOptions.enhancedSigner");
-            if (enhancedOptions.enhancedSigner() != desiredEnhancedSigner && desiredEnhancedSigner != address(0)) {
-                console.log("Updating EnhancedSigner...");
-                enhancedOptions.setEnhancedSigner(desiredEnhancedSigner);
-            }
-        }
-
-        // 10. FlashLoanRedeemPeriodStart (Blind set as it is internal)
-        if (vm.keyExists(configJson, ".EnhancedOptions.flashLoanRedeemPeriodStart")) {
-            uint256 desiredPeriod = configJson.readUint(".EnhancedOptions.flashLoanRedeemPeriodStart");
-            console.log("Updating FlashLoanRedeemPeriodStart...");
-            enhancedOptions.setFlashLoanRedeemPeriodStart(desiredPeriod);
         }
 
         vm.stopBroadcast();

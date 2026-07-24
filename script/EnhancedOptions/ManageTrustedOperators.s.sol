@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
+import {IEnhancedOptionsTimelock} from "src/core/interfaces/IEnhancedOptionsTimelock.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
 /**
@@ -10,10 +11,10 @@ import {stdJson} from "forge-std/StdJson.sol";
  *
  * Supported config keys:
  *   Taker role (for trusted taker path):
- *     .EnhancedOptions.trustedTakers     (address[]) -> setTrustedTaker(addr, true)
+ *     .EnhancedOptions.trustedTakers     (address[]) -> schedule/execute trusted taker
  *     .EnhancedOptions.untrustedTakers   (address[]) -> setTrustedTaker(addr, false)
  *   Maker role (for trusted maker path):
- *     .EnhancedOptions.trustedMakers     (address[]) -> setTrustedMaker(addr, true)
+ *     .EnhancedOptions.trustedMakers     (address[]) -> schedule/execute trusted maker
  *     .EnhancedOptions.untrustedMakers   (address[]) -> setTrustedMaker(addr, false)
  *
  * Backward compatibility:
@@ -51,10 +52,7 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.trustedTakers")) {
             address[] memory trusted = configJson.readAddressArray(".EnhancedOptions.trustedTakers");
             for (uint256 i = 0; i < trusted.length; i++) {
-                if (!enhancedOptions.trustedTakers(trusted[i])) {
-                    console.log("Authorizing trusted taker:", trusted[i]);
-                    enhancedOptions.setTrustedTaker(trusted[i], true);
-                }
+                _syncTrustedTaker(enhancedOptions, trusted[i], true);
             }
         }
 
@@ -62,10 +60,7 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.trustedOperators")) {
             address[] memory trusted = configJson.readAddressArray(".EnhancedOptions.trustedOperators");
             for (uint256 i = 0; i < trusted.length; i++) {
-                if (!enhancedOptions.trustedTakers(trusted[i])) {
-                    console.log("Authorizing trusted taker (legacy key):", trusted[i]);
-                    enhancedOptions.setTrustedTaker(trusted[i], true);
-                }
+                _syncTrustedTaker(enhancedOptions, trusted[i], true);
             }
         }
 
@@ -73,10 +68,7 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.untrustedTakers")) {
             address[] memory untrusted = configJson.readAddressArray(".EnhancedOptions.untrustedTakers");
             for (uint256 i = 0; i < untrusted.length; i++) {
-                if (enhancedOptions.trustedTakers(untrusted[i])) {
-                    console.log("Deauthorizing trusted taker:", untrusted[i]);
-                    enhancedOptions.setTrustedTaker(untrusted[i], false);
-                }
+                _syncTrustedTaker(enhancedOptions, untrusted[i], false);
             }
         }
 
@@ -84,10 +76,7 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.untrustedOperators")) {
             address[] memory untrusted = configJson.readAddressArray(".EnhancedOptions.untrustedOperators");
             for (uint256 i = 0; i < untrusted.length; i++) {
-                if (enhancedOptions.trustedTakers(untrusted[i])) {
-                    console.log("Deauthorizing trusted taker (legacy key):", untrusted[i]);
-                    enhancedOptions.setTrustedTaker(untrusted[i], false);
-                }
+                _syncTrustedTaker(enhancedOptions, untrusted[i], false);
             }
         }
 
@@ -95,10 +84,7 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.trustedMakers")) {
             address[] memory trusted = configJson.readAddressArray(".EnhancedOptions.trustedMakers");
             for (uint256 i = 0; i < trusted.length; i++) {
-                if (!enhancedOptions.trustedMakers(trusted[i])) {
-                    console.log("Authorizing trusted maker:", trusted[i]);
-                    enhancedOptions.setTrustedMaker(trusted[i], true);
-                }
+                _syncTrustedMaker(enhancedOptions, trusted[i], true);
             }
         }
 
@@ -106,14 +92,53 @@ contract ManageTrustedOperators is Script {
         if (vm.keyExists(configJson, ".EnhancedOptions.untrustedMakers")) {
             address[] memory untrusted = configJson.readAddressArray(".EnhancedOptions.untrustedMakers");
             for (uint256 i = 0; i < untrusted.length; i++) {
-                if (enhancedOptions.trustedMakers(untrusted[i])) {
-                    console.log("Deauthorizing trusted maker:", untrusted[i]);
-                    enhancedOptions.setTrustedMaker(untrusted[i], false);
-                }
+                _syncTrustedMaker(enhancedOptions, untrusted[i], false);
             }
         }
 
         vm.stopBroadcast();
         console.log("ManageTrustedOperators complete.");
+    }
+
+    function _syncTrustedTaker(EnhancedOptions enhancedOptions, address taker, bool desired) internal {
+        bool current = enhancedOptions.trustedTakers(taker);
+        bytes memory key = abi.encode(taker);
+        (, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedTaker, key);
+        if (!desired) {
+            if (current || executeAfter != 0) enhancedOptions.setTrustedTaker(taker, false);
+            return;
+        }
+        if (current) return;
+        if (executeAfter == 0) {
+            console.log("Scheduling trusted taker:", taker);
+            enhancedOptions.scheduleConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedTaker, key);
+        } else if (block.timestamp >= executeAfter) {
+            console.log("Executing trusted taker:", taker);
+            enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedTaker, key);
+        } else {
+            console.log("Trusted taker pending until:", executeAfter);
+        }
+    }
+
+    function _syncTrustedMaker(EnhancedOptions enhancedOptions, address maker, bool desired) internal {
+        bool current = enhancedOptions.trustedMakers(maker);
+        bytes memory key = abi.encode(maker);
+        (, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedMaker, key);
+        if (!desired) {
+            if (current || executeAfter != 0) enhancedOptions.setTrustedMaker(maker, false);
+            return;
+        }
+        if (current) return;
+        if (executeAfter == 0) {
+            console.log("Scheduling trusted maker:", maker);
+            enhancedOptions.scheduleConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedMaker, key);
+        } else if (block.timestamp >= executeAfter) {
+            console.log("Executing trusted maker:", maker);
+            enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.TrustedMaker, key);
+        } else {
+            console.log("Trusted maker pending until:", executeAfter);
+        }
     }
 }

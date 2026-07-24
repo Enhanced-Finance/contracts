@@ -8,12 +8,11 @@ import {Parser} from "./libs/Parser.sol";
 import {Actions} from "./libs/Actions.sol";
 import {MMarketOperations} from "./libs/MMarketOperations.sol";
 import {MarginVault} from "./libs/MarginVault.sol";
-// import {IOtoken} from "./interfaces/IOtoken.sol";
-// import {IAavePool} from "./interfaces/IAavePool.sol";
-// import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
+import {EnhancedOptionsTimelockLib} from "./libs/EnhancedOptionsTimelockLib.sol";
 import {IController} from "./interfaces/IController.sol";
+import {IEnhancedOptions} from "./interfaces/IEnhancedOptions.sol";
+import {IEnhancedOptionsTimelock} from "./interfaces/IEnhancedOptionsTimelock.sol";
 import {IOtokenFactory} from "./interfaces/IOtokenFactory.sol";
-import {MarginCalculatorInterface} from "./interfaces/MarginCalculatorInterface.sol";
 import {OtokenInterface} from "./interfaces/OtokenInterface.sol";
 
 import {ERC20} from "lib/solmate/src/tokens/ERC20.sol";
@@ -30,36 +29,34 @@ import {UUPSUpgradeable} from "lib/openzeppelin-contracts-upgradeable/contracts/
  * @title Enhanced - this contract is the operator on both mmarket and Gamma
  * @dev assumed no funds are stored on this contract
  */
-contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGuard, UUPSUpgradeable {
+contract EnhancedOptions is
+    IEnhancedOptionsTimelock,
+    EIP712Upgradeable,
+    OwnableUpgradeable,
+    ReentrancyGuard,
+    UUPSUpgradeable
+{
     /// @dev operator
     address public operator;
+    /// @dev release custody operator
+    address public custodyOperator;
     /// @dev mmarket
     MMarket public mmarket;
     /// @dev controller
     IController public controller;
     /// @dev otokenfactory
     IOtokenFactory public factory;
-    /// @dev Hyperlend Pool contract - used for Flash Loans
-    address public flashLoanPool;
-    /// @dev Hyperswap router
-    address public swapRouter;
     /// @dev Margin pool contract
     address public marginPool;
     /// @dev Fee recipient
     address public feeRecipient;
-    /// @dev Trusted enhanced signer for offchain quotes
-    address public enhancedSigner;
-    /// @dev Period during ControllerLogic.redeemTimePeriod after which ITM options can be flash loan redeemed.
-    ///      If equal to or greater than redeemTimePeriod, there is no flash loan redeem period.
-    ///      If set to zero then the whole redeemTimePeriod allows flash loan redemptions.
-    uint256 flashLoanRedeemPeriodStart;
     /// @dev mapping to track used digests to prevent replay attacks
     mapping(bytes32 => bool) internal isDigestUsed;
     /// @dev addresses authorized to call ingressoNewTrustedTakerPosition and ingressoSettle without confirmation sig
     mapping(address => bool) public trustedTakers;
     /// @dev addresses authorized to call ingressoNewTrustedMakerPosition and ingressoSettle without quote sig
     mapping(address => bool) public trustedMakers;
-    /// @dev maker => receiver: if set, ingressoRedeem uses receiver as the redemption payee instead of maker
+    /// @dev maker => receiver: required for maker-enabled flows; redeem proceeds are paid to the configured receiver
     mapping(address => address) public makerWhitelist;
     /// @dev owner => vaultId => custody release accounting
     mapping(address => mapping(uint256 => CustodyRelease)) public vaultCustodyReleases;
@@ -71,17 +68,22 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     ///      A non-zero entry both authorizes the (maker, custodian) pair and sets its custody limit;
     ///      bps == 0 means the custodian is not authorized to receive releases from this maker.
     mapping(address => mapping(address => uint256)) public makerCustodyLimitBps;
+    /// @dev owner => vaultId => maker that bought the short otokens minted from this vault.
+    mapping(address => mapping(uint256 => address)) public vaultMakers;
+    /// @dev address => scheduled trusted taker authorization timestamp
+    mapping(address => uint64) internal pendingTrustedTakers;
+    /// @dev address => scheduled trusted maker authorization timestamp
+    mapping(address => uint64) internal pendingTrustedMakers;
+    /// @dev maker => scheduled redemption receiver update
+    mapping(address => EnhancedOptionsTimelockLib.PendingAddressUpdate) internal pendingMakerWhitelist;
+    /// @dev maker => custodian => scheduled non-zero custody limit update
+    mapping(address => mapping(address => EnhancedOptionsTimelockLib.PendingUintUpdate)) internal
+        pendingMakerCustodyLimitBps;
 
     /// @notice emits an event when there is a change in operator
     event OperatorChanged(address newOperator, address oldOperator);
-    /// @notice emits when a trusted taker is added/removed
-    event TrustedTakerSet(address indexed taker, bool trusted);
-    /// @notice emits when a trusted maker is added/removed
-    event TrustedMakerSet(address indexed maker, bool trusted);
-    /// @notice emits when a maker's whitelisted receiver is set or removed
-    event MakerWhitelistSet(address indexed maker, address indexed receiver);
-    /// @notice emits when a (maker, custodian) custody limit is set or cleared
-    event MakerCustodyLimitBpsSet(address indexed maker, address indexed custodian, uint256 bps);
+    /// @notice emits an event when there is a change in custody operator
+    event CustodyOperatorChanged(address newCustodyOperator, address oldCustodyOperator);
     /// @notice emits when vault collateral is released to a custodian
     event CollateralReleasedToCustody(
         address indexed owner,
@@ -103,15 +105,12 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     /// @notice emits when operator donates assets from this contract into Gamma margin pool
     event Donated(address indexed asset, uint256 amount);
 
-    error ZeroAddress();
-    error ZeroMaker();
-    error ZeroReceiver();
     error ZeroAsset();
     error ZeroAmount();
     error ZeroOwner();
     error BadOperator();
+    error BadCustodyOperator();
     error Unauthorized();
-    error CustodyLimitTooHigh();
     error SystemFullyPaused();
     error CustodianNotAuthorized();
     error CustodyAuthorizationExpired();
@@ -123,20 +122,22 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     error ArrayLengthMismatch();
     error ReturnExceedsOutstanding();
     error InvalidQuoteSignature();
+    error QuoteAuthorizationExpired();
     error InvalidConfirmationSignature();
     error TakerMustBeCaller();
     error InvalidTransferSignature();
     error InvalidTransferIsDeposit();
-    error NotSupported();
     error OutstandingCustodyRelease();
     error QuantityExceedsQuote();
     error CannotReleaseFromExpiredVault();
     error ExceedsVaultDeposit();
     error ExceedsMakerCustodyLimit();
+    error MakerNotVaultMaker();
     error SignatureAlreadyUsed();
     error InvalidOperationsArray();
     error InvalidActionsArray();
     error MmarketWithdrawnAssetIsNotRedeemedOtoken();
+    error RedeemPayerInvalid();
     error RedeemReceiverInvalid();
     error RedeemAmountMustBeWithdrawAmount();
     error InvalidWithdrawRecipient();
@@ -144,18 +145,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
 
     address internal constant ZERO_ADDRESS = address(0x0);
     uint256 internal constant MAX_CUSTODY_LIMIT_BPS = 10_000;
-
-    string internal constant QUOTE_TYPE =
-        "Quote(address assetAddress,uint256 chainId,bool isPut,bool isPhysicallySettled,uint256 strike,uint64 expiry,address maker,uint64 nonce,uint256 price,uint256 quantity,bool isTakerBuy,uint64 validUntil,address usd,address collateralAsset)";
-
-    string internal constant CONFIRMATION_TYPE =
-        "Confirmation(address maker,address assetAddress,uint256 chainId,uint64 expiry,bool isPut,bool isPhysicallySettled,uint64 nonce,uint256 price,uint256 quantity,uint64 quoteNonce,bytes quoteSignature,uint256 strike,address taker,bool isTakerBuy,address usd,address collateralAsset,uint256 collateralAmount)";
-
-    string internal constant TRANSFER_TYPE =
-        "Transfer(address user,address asset,uint256 chainId,uint256 amount,bool isDeposit,uint64 nonce)";
-
-    string public constant OTC_TRADE_TYPE =
-        "OtcTrade(uint256 chainId,address user1,address user2,address asset1,address asset2,uint256 amount1,uint256 amount2,uint64 nonce)";
+    uint256 public constant CONFIG_TIMELOCK_DELAY = 48 hours;
 
     string internal constant CUSTODY_RELEASE_TYPE =
         "CustodyRelease(address maker,address receiver,uint256 chainId,uint64 nonce,uint64 validUntil,bytes32 requestsHash)";
@@ -168,9 +158,25 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         _disableInitializers();
     }
 
-    function initialize() external initializer {
+    function initialize(
+        address[] calldata initialTrustedTakers,
+        address[] calldata initialTrustedMakers,
+        address initialOperator,
+        address initialCustodyOperator
+    ) external initializer {
+        if (initialOperator == ZERO_ADDRESS) revert ZeroAddress();
+        if (initialCustodyOperator == ZERO_ADDRESS) revert ZeroAddress();
         __EIP712_init("enhanced", "0.0.0");
         __Ownable_init_unchained(msg.sender);
+
+        operator = initialOperator;
+        emit OperatorChanged(initialOperator, ZERO_ADDRESS);
+
+        custodyOperator = initialCustodyOperator;
+        emit CustodyOperatorChanged(initialCustodyOperator, ZERO_ADDRESS);
+        EnhancedOptionsTimelockLib.initializeTrustedRoles(
+            trustedTakers, trustedMakers, initialTrustedTakers, initialTrustedMakers
+        );
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
@@ -180,6 +186,13 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         if (_operator == ZERO_ADDRESS) revert ZeroAddress();
         emit OperatorChanged(_operator, operator);
         operator = _operator;
+    }
+
+    function setCustodyOperator(address _custodyOperator) external {
+        _checkOwner();
+        if (_custodyOperator == ZERO_ADDRESS) revert ZeroAddress();
+        emit CustodyOperatorChanged(_custodyOperator, custodyOperator);
+        custodyOperator = _custodyOperator;
     }
 
     function setController(address _controller) external {
@@ -200,18 +213,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         factory = IOtokenFactory(_factory);
     }
 
-    function setFlashLoanPool(address _flashLoanPool) external {
-        _checkOwner();
-        if (_flashLoanPool == ZERO_ADDRESS) revert ZeroAddress();
-        flashLoanPool = _flashLoanPool;
-    }
-
-    function setSwapRouter(address _swapRouter) external {
-        _checkOwner();
-        if (_swapRouter == ZERO_ADDRESS) revert ZeroAddress();
-        swapRouter = _swapRouter;
-    }
-
     function setMarginPool(address _marginPool) external {
         _checkOwner();
         if (_marginPool == ZERO_ADDRESS) revert ZeroAddress();
@@ -224,49 +225,85 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         feeRecipient = _feeRecipient;
     }
 
-    function setEnhancedSigner(address _enhancedSigner) external {
-        _checkOwner();
-        if (_enhancedSigner == ZERO_ADDRESS) revert ZeroAddress();
-        enhancedSigner = _enhancedSigner;
-    }
-
-    function setFlashLoanRedeemPeriodStart(uint256 _flashLoanRedeemPeriodStart) external {
-        _checkOwner();
-        flashLoanRedeemPeriodStart = _flashLoanRedeemPeriodStart;
-    }
-
     function setTrustedTaker(address _taker, bool _trusted) external {
         _checkOwner();
-        trustedTakers[_taker] = _trusted;
-        emit TrustedTakerSet(_taker, _trusted);
+        EnhancedOptionsTimelockLib.revokeTrustedTaker(trustedTakers, pendingTrustedTakers, _taker, _trusted);
     }
 
     function setTrustedMaker(address _maker, bool _trusted) external {
         _checkOwner();
-        trustedMakers[_maker] = _trusted;
-        emit TrustedMakerSet(_maker, _trusted);
+        EnhancedOptionsTimelockLib.revokeTrustedMaker(trustedMakers, pendingTrustedMakers, _maker, _trusted);
     }
 
-    /// @notice Set or remove a maker's whitelisted receiver for redemption.
-    ///         Pass receiver = address(0) to remove the entry.
-    function setMakerWhitelist(address _maker, address _receiver) external {
-        _checkOwner();
-        if (_maker == ZERO_ADDRESS) revert ZeroMaker();
-        makerWhitelist[_maker] = _receiver;
-        emit MakerWhitelistSet(_maker, _receiver);
-    }
-
-    /// @notice Authorize a (maker, receiver) pair for vault collateral borrowing and set its
+    /// @notice Authorize a (maker, receiver) pair for vault collateral custody release and set its
     ///         credit limit as basis points of each vault's deposited asset amount.
-    ///         Example: 7000 allows borrowing up to 70% of the matching asset deposited in the vault.
+    ///         Example: 7000 allows custody release up to 70% of the matching asset deposited in the vault.
     ///         Pass _bps = 0 to remove the authorization.
     function setMakerCustodyLimitBps(address _maker, address _receiver, uint256 _bps) external {
         _checkOwner();
-        if (_maker == ZERO_ADDRESS) revert ZeroMaker();
-        if (_receiver == ZERO_ADDRESS) revert ZeroReceiver();
-        if (_bps > MAX_CUSTODY_LIMIT_BPS) revert CustodyLimitTooHigh();
-        makerCustodyLimitBps[_maker][_receiver] = _bps;
-        emit MakerCustodyLimitBpsSet(_maker, _receiver, _bps);
+        EnhancedOptionsTimelockLib.clearMakerCustodyLimit(
+            makerCustodyLimitBps, pendingMakerCustodyLimitBps, _maker, _receiver, _bps
+        );
+    }
+
+    function scheduleConfigUpdate(TimelockConfigType _configType, bytes calldata _data) external override {
+        _checkOwner();
+        EnhancedOptionsTimelockLib.scheduleConfigUpdate(
+            uint8(_configType),
+            _data,
+            trustedTakers,
+            trustedMakers,
+            makerWhitelist,
+            makerCustodyLimitBps,
+            pendingTrustedTakers,
+            pendingTrustedMakers,
+            pendingMakerWhitelist,
+            pendingMakerCustodyLimitBps
+        );
+    }
+
+    function executeConfigUpdate(TimelockConfigType _configType, bytes calldata _key) external override {
+        _checkOwner();
+        EnhancedOptionsTimelockLib.executeConfigUpdate(
+            uint8(_configType),
+            _key,
+            trustedTakers,
+            trustedMakers,
+            makerWhitelist,
+            makerCustodyLimitBps,
+            pendingTrustedTakers,
+            pendingTrustedMakers,
+            pendingMakerWhitelist,
+            pendingMakerCustodyLimitBps
+        );
+    }
+
+    function cancelConfigUpdate(TimelockConfigType _configType, bytes calldata _key) external override {
+        _checkOwner();
+        EnhancedOptionsTimelockLib.cancelConfigUpdate(
+            uint8(_configType),
+            _key,
+            pendingTrustedTakers,
+            pendingTrustedMakers,
+            pendingMakerWhitelist,
+            pendingMakerCustodyLimitBps
+        );
+    }
+
+    function pendingConfigUpdate(TimelockConfigType _configType, bytes calldata _key)
+        external
+        view
+        override
+        returns (bytes memory data, uint64 executeAfter)
+    {
+        return EnhancedOptionsTimelockLib.pendingConfigUpdate(
+            uint8(_configType),
+            _key,
+            pendingTrustedTakers,
+            pendingTrustedMakers,
+            pendingMakerWhitelist,
+            pendingMakerCustodyLimitBps
+        );
     }
 
     /// @notice sets approval for the margin pool to remove funds for an asset
@@ -294,6 +331,10 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         if (operator != _msgSender()) revert BadOperator();
     }
 
+    function _checkCustodyOperator() internal view {
+        if (custodyOperator != _msgSender()) revert BadCustodyOperator();
+    }
+
     function _checkOperatorOrTrustedTaker() internal view {
         if (operator != _msgSender() && !trustedTakers[_msgSender()]) revert Unauthorized();
     }
@@ -310,6 +351,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         uint256 expiration;
         bool isPut;
         bool isPhysicallySettled;
+        address vaultOwner;
     }
 
     struct CustodyReleaseRequest {
@@ -340,12 +382,12 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         }
         if (!(actions.length == 1 && actions[0].actionType == Actions.ActionType.Redeem)) revert InvalidActionsArray();
         if (operations[0].asset1 != actions[0].asset) revert MmarketWithdrawnAssetIsNotRedeemedOtoken();
-        address whitelistedReceiver = makerWhitelist[operations[0].user1];
-        address expectedReceiver = whitelistedReceiver != ZERO_ADDRESS ? whitelistedReceiver : operations[0].user1;
+        address expectedReceiver = _requireMakerWhitelist(operations[0].user1);
+        if (actions[0].owner != operations[0].user1) revert RedeemPayerInvalid();
         if (actions[0].secondAddress != expectedReceiver) revert RedeemReceiverInvalid();
         if (operations[0].amount1 != actions[0].amount) revert RedeemAmountMustBeWithdrawAmount();
         if (operations[0].user2 != address(this)) revert InvalidWithdrawRecipient();
-        _revertIfOutstandingCustody(operations[0].user1);
+        _revertIfMakerOtokenHasOutstandingCustody(operations[0].user1, actions[0].asset);
         mmarket.operate(operations);
         controller.operate(actions);
     }
@@ -356,7 +398,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         for (uint256 i = 0; i < len; i++) {
             if (actions[i].actionType != Actions.ActionType.SettleVault) revert InvalidActionsArray();
             if (actions[i].secondAddress != actions[i].owner) revert SettleReceiverMustBeVaultOwner();
-            _revertIfOutstandingCustody(actions[i].owner);
+            _revertIfVaultHasOutstandingCustody(actions[i].owner, actions[i].vaultId);
         }
         controller.operate(actions);
     }
@@ -369,10 +411,11 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         CustodyReleaseRequest[] calldata requests,
         bytes calldata signature
     ) external nonReentrant {
-        _checkOperator();
+        _checkCustodyOperator();
         if (controller.systemFullyPaused()) revert SystemFullyPaused();
         if (maker == ZERO_ADDRESS) revert ZeroMaker();
         if (receiver == ZERO_ADDRESS) revert ZeroReceiver();
+        _requireMakerWhitelist(maker);
         uint256 bps = makerCustodyLimitBps[maker][receiver];
         if (bps == 0) revert CustodianNotAuthorized();
         if (block.timestamp > validUntil) revert CustodyAuthorizationExpired();
@@ -400,7 +443,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             }
 
             uint256 newOutstandingAmount = release.outstandingAmount + request.amount;
-            _validateCustodyLimit(request.owner, request.vaultId, request.asset, newOutstandingAmount, bps);
+            _validateCustodyLimit(maker, request.owner, request.vaultId, request.asset, newOutstandingAmount, bps);
 
             release.releasedAmount += request.amount;
             release.outstandingAmount = newOutstandingAmount;
@@ -462,8 +505,11 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             Parser.Confirmation memory sellerConfirmation,
             bytes memory quoteSig,
             bytes memory confSig,
-            uint256 fee
+            uint256 protocolFee,
+            uint256 makerFee
         ) = Parser.parseQuoteAndConfirmation(payload);
+
+        _requireMakerWhitelist(mmQuote.maker);
 
         bytes32 quoteDigest = getQuoteDigest(mmQuote);
         bytes32 confDigest = getConfirmationDigest(sellerConfirmation);
@@ -478,7 +524,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         }
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        _executeNewPosition(sellerConfirmation, fee);
+        _executeNewPosition(sellerConfirmation, mmQuote.validUntil, protocolFee, makerFee);
     }
 
     /**
@@ -497,8 +543,11 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             Parser.Quote memory mmQuote,
             Parser.Confirmation memory sellerConfirmation,
             bytes memory quoteSig,,
-            uint256 fee
+            uint256 protocolFee,
+            uint256 makerFee
         ) = Parser.parseQuoteAndConfirmation(payload);
+
+        _requireMakerWhitelist(mmQuote.maker);
 
         bytes32 quoteDigest = getQuoteDigest(mmQuote);
         _consumeDigest(quoteDigest);
@@ -508,7 +557,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         require(sellerConfirmation.taker == msg.sender, TakerMustBeCaller());
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, protocolFee, makerFee);
     }
 
     /**
@@ -538,9 +587,11 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             Parser.Quote memory mmQuote,
             Parser.Confirmation memory sellerConfirmation,,
             bytes memory confSig,
-            uint256 fee
+            uint256 protocolFee,
+            uint256 makerFee
         ) = Parser.parseQuoteAndConfirmation(payload);
         _checkTrustedMaker(mmQuote.maker);
+        _requireMakerWhitelist(mmQuote.maker);
 
         bytes32 confDigest = getConfirmationDigest(sellerConfirmation);
 
@@ -548,8 +599,9 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         if (!SignatureChecker.isValidSignatureNow(sellerConfirmation.taker, confDigest, confSig)) {
             revert InvalidConfirmationSignature();
         }
+        _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, protocolFee, makerFee);
     }
 
     /**
@@ -563,9 +615,14 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
     {
         _checkOperatorOrTrustedTaker();
 
-        (Parser.Quote memory mmQuote, Parser.Confirmation memory sellerConfirmation,,, uint256 fee) =
-            Parser.parseQuoteAndConfirmation(payload);
+        (
+            Parser.Quote memory mmQuote,
+            Parser.Confirmation memory sellerConfirmation,,,
+            uint256 protocolFee,
+            uint256 makerFee
+        ) = Parser.parseQuoteAndConfirmation(payload);
         _checkTrustedMaker(mmQuote.maker);
+        _requireMakerWhitelist(mmQuote.maker);
 
         bytes32 quoteDigest = getQuoteDigest(mmQuote);
         bytes32 confDigest = getConfirmationDigest(sellerConfirmation);
@@ -575,7 +632,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         require(sellerConfirmation.taker == msg.sender, TakerMustBeCaller());
         _validateQuoteQuantity(mmQuote, sellerConfirmation);
 
-        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, fee);
+        (vaultId, totalPremium) = _executeNewPosition(sellerConfirmation, mmQuote.validUntil, protocolFee, makerFee);
     }
 
     /**
@@ -589,13 +646,18 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
      *         6. Operations.Withdraw (withdraw premium to seller's wallet)
      *         7. CONDITIONAL Operations.Withdraw (fee payment)
      */
-    function _executeNewPosition(Parser.Confirmation memory sellerConfirmation, uint256 fee)
-        internal
-        returns (uint256 vaultId, uint256 totalPremium)
-    {
+    function _executeNewPosition(
+        Parser.Confirmation memory sellerConfirmation,
+        uint64 validUntil,
+        uint256 protocolFee,
+        uint256 makerFee
+    ) internal returns (uint256 vaultId, uint256 totalPremium) {
+        if (block.timestamp > validUntil) revert QuoteAuthorizationExpired();
         vaultId = controller.getAccountVaultCounter(sellerConfirmation.taker) + 1;
         totalPremium = sellerConfirmation.quantity * sellerConfirmation.price
             * (10 ** ERC20(sellerConfirmation.usd).decimals()) / 1e36;
+        totalPremium -= makerFee;
+        uint256 fee = protocolFee + makerFee;
 
         Actions.ActionArgs[] memory actions = new Actions.ActionArgs[](3);
         MMarketOperations.Operation[] memory operations;
@@ -612,7 +674,8 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
                 strike: sellerConfirmation.strike,
                 expiration: sellerConfirmation.expiry,
                 isPut: sellerConfirmation.isPut,
-                isPhysicallySettled: sellerConfirmation.isPhysicallySettled
+                isPhysicallySettled: sellerConfirmation.isPhysicallySettled,
+                vaultOwner: sellerConfirmation.taker
             })
         );
 
@@ -648,6 +711,7 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             0, // index (not used)
             bytes("") // data bytes (not used)
         );
+        vaultMakers[sellerConfirmation.taker][vaultId] = sellerConfirmation.maker;
 
         operations[0] = MMarketOperations.Operation(
             MMarketOperations.OperationType.Deposit,
@@ -793,37 +857,6 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         _doNewTrustedMakerPosition(orderPayload);
     }
 
-    function ingressoOTCTrade(bytes calldata payload) external {
-        revert NotSupported();
-    }
-
-    // function ingressoOTCTrade(bytes calldata payload) external nonReentrant {
-    //     _checkOperator();
-    //     (Parser.OTCTrade memory otcTrade, bytes memory sig) = Parser.parseOTCTrade(payload);
-
-    //     bytes32 digest = getOTCTradeDigest(otcTrade);
-
-    //     _consumeDigest(digest);
-    //     if (!SignatureChecker.isValidSignatureNow(enhancedSigner, digest, sig)) {
-    //         revert("invalid OTC Trade signature");
-    //     }
-
-    //     MMarketOperations.Operation[] memory operations = new MMarketOperations.Operation[](1);
-
-    //     operations[0] = MMarketOperations.Operation(
-    //         MMarketOperations.OperationType.ConductTrade,
-    //         otcTrade.user1, // user 1
-    //         otcTrade.user2, // user 2
-    //         otcTrade.asset1, // asset 1
-    //         otcTrade.asset2, // asset 2
-    //         otcTrade.amount1, // amount 1 in asset1 decimals
-    //         otcTrade.amount2, // amount 2 in asset2 decimals
-    //         bytes("")
-    //     );
-
-    //     mmarket.operate(operations);
-    // }
-
     /**
      * @notice Either retrieves the option token if it already exists, or deploy it
      */
@@ -835,7 +868,8 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             otoken.strike,
             otoken.expiration,
             otoken.isPut,
-            otoken.isPhysicallySettled
+            otoken.isPhysicallySettled,
+            otoken.vaultOwner
         );
         if (otokenFromFactory != address(0)) {
             if (ERC20(otokenFromFactory).allowance(address(this), address(mmarket)) == 0) {
@@ -851,7 +885,8 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
             otoken.strike,
             otoken.expiration,
             otoken.isPut,
-            otoken.isPhysicallySettled
+            otoken.isPhysicallySettled,
+            otoken.vaultOwner
         );
         SafeTransferLib.safeApprove(ERC20(otokenCreated), address(mmarket), type(uint256).max);
         return otokenCreated;
@@ -872,160 +907,18 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         emit Donated(_asset, _amount);
     }
 
-    // /**
-    //  * @notice Executes a flash loan to this contract. Logic and repayment contained in executeOperation()
-    //  */
-    // function flashLoanRedeem(address asset, uint256 amount, bytes calldata params) external {
-    //     _checkOperator();
-
-    //     IAavePool(flashLoanPool).flashLoanSimple(address(this), asset, amount, params, 0);
-    // }
-
-    // /**
-    //  * @notice Callback from flash loan provider. Executes a physical option redemption using loaned funds, then swaps collateral back into borrowed asset to repay loan.
-    //  */
-    // function executeOperation(
-    //     address asset, // loaned asset
-    //     uint256 amount, // loaned amount
-    //     uint256 premium, // the fee amount to repay
-    //     address initiator, // the address of the flash loan initiator
-    //     bytes calldata params // params passed when initiating the flash loan
-    // )
-    //     external
-    //     nonReentrant
-    //     returns (bool)
-    // {
-    //     require(msg.sender == flashLoanPool, "Caller is not flashLoanPool");
-    //     require(initiator == address(this), "UNAUTHORIZED"); // make sure the flash loan call came from our access controlled function
-
-    //     (Actions.ActionArgs memory args, address redeemer, bytes memory swapRoute, uint256 amountInMaximum) =
-    //         Actions._constructFlashLoanRedeemActionArgs(params);
-
-    //     require(
-    //         block.timestamp > IOtoken(args.asset).expiryTimestamp() + flashLoanRedeemPeriodStart,
-    //         "flash loan redeem period not started"
-    //     );
-
-    //     _retrieveOtokenForFlashLoanRedeem(redeemer, args.asset, args.amount);
-
-    //     Actions.ActionArgs[] memory argsArray = new Actions.ActionArgs[](1);
-    //     argsArray[0] = args;
-
-    //     controller.operate(argsArray);
-
-    //     // ====== hyperswap tx ========
-    //     address collateral = IOtoken(args.asset).collateralAsset();
-
-    //     SafeTransferLib.safeApprove(ERC20(collateral), swapRouter, amountInMaximum);
-
-    //     {
-    //         ISwapRouter.ExactOutputParams memory swapParams = ISwapRouter.ExactOutputParams({
-    //             path: swapRoute,
-    //             recipient: address(this),
-    //             deadline: block.timestamp,
-    //             amountOut: premium + amount - ERC20(asset).balanceOf(address(this)),
-    //             amountInMaximum: amountInMaximum
-    //         });
-
-    //         // Executes the swap to repay loan
-    //         ISwapRouter(swapRouter).exactOutput(swapParams);
-    //     }
-    //     // zero out approval
-    //     SafeTransferLib.safeApprove(ERC20(collateral), swapRouter, 0);
-
-    //     // ====== send profit to redeemer ========
-    //     // no funds held on contract so any balance should belong to user
-    //     {
-    //         uint256 userProfitCollateral = ERC20(collateral).balanceOf(address(this));
-    //         SafeTransferLib.safeTransfer(ERC20(collateral), redeemer, userProfitCollateral);
-    //     }
-
-    //     // ====== Hyperlend flash loan repayment ========
-    //     SafeTransferLib.safeApprove(ERC20(asset), flashLoanPool, premium + amount);
-
-    //     return true;
-    // }
-
-    function _retrieveOtokenForFlashLoanRedeem(address redeemer, address otoken, uint256 amount) internal {
-        // create operation to withdraw otoken from mmarket
-        MMarketOperations.Operation[] memory operationsArray = new MMarketOperations.Operation[](1);
-        MMarketOperations.Operation memory withdrawOperation = MMarketOperations.Operation(
-            MMarketOperations.OperationType.Withdraw,
-            redeemer, // user to withdraw from
-            address(this), // withdraw to this address
-            otoken, // otoken address
-            address(0), // asset_2 not needed
-            amount, // amount of otoken to withdraw
-            0, // amount_2 not needed
-            bytes("0")
-        );
-        operationsArray[0] = withdrawOperation;
-
-        mmarket.operate(operationsArray);
-    }
-
     /////////////// --  EIP-712 FUNCTIONS -- ///////////////
 
     function getQuoteDigest(Parser.Quote memory q) internal view returns (bytes32) {
-        bytes32 typeHash = keccak256(bytes(QUOTE_TYPE));
-        bytes32 structHash;
-
-        bytes memory encodedFirstHalf =
-            abi.encode(typeHash, q.assetAddress, q.chainId, q.isPut, q.isPhysicallySettled, q.strike, q.expiry);
-
-        bytes memory encodedSecondHalf =
-            abi.encode(q.maker, q.nonce, q.price, q.quantity, q.isTakerBuy, q.validUntil, q.usd, q.collateralAsset);
-
-        structHash = keccak256(bytes.concat(encodedFirstHalf, encodedSecondHalf));
-
-        return _hashTypedDataV4(structHash);
+        return _hashTypedDataV4(Parser.quoteStructHash(q));
     }
 
     function getConfirmationDigest(Parser.Confirmation memory c) internal view returns (bytes32) {
-        bytes32 typeHash = keccak256(bytes(CONFIRMATION_TYPE));
-        bytes32 sigHash = keccak256(c.quoteSignature);
-
-        bytes memory firstHalf = abi.encode(
-            typeHash, c.maker, c.assetAddress, c.chainId, c.expiry, c.isPut, c.isPhysicallySettled, c.nonce, c.price
-        );
-
-        bytes memory secondHalf = abi.encode(
-            c.quantity,
-            c.quoteNonce,
-            sigHash,
-            c.strike,
-            c.taker,
-            c.isTakerBuy,
-            c.usd,
-            c.collateralAsset,
-            c.collateralAmount
-        );
-
-        bytes memory fullEncoded = bytes.concat(firstHalf, secondHalf);
-
-        bytes32 structHash = keccak256(fullEncoded);
-
-        return _hashTypedDataV4(structHash);
+        return _hashTypedDataV4(Parser.confirmationStructHash(c));
     }
 
     function getTransferDigest(Parser.Transfer memory t) internal view returns (bytes32) {
-        bytes32 typeHash = keccak256(bytes(TRANSFER_TYPE));
-
-        bytes32 structHash = keccak256(abi.encode(typeHash, t.user, t.asset, t.chainId, t.amount, t.isDeposit, t.nonce));
-
-        return _hashTypedDataV4(structHash);
-    }
-
-    function getOTCTradeDigest(Parser.OTCTrade memory otc) public view returns (bytes32) {
-        bytes32 typeHash = keccak256(bytes(OTC_TRADE_TYPE));
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                typeHash, otc.chainId, otc.user1, otc.user2, otc.asset1, otc.asset2, otc.amount1, otc.amount2, otc.nonce
-            )
-        );
-
-        return _hashTypedDataV4(structHash);
+        return _hashTypedDataV4(Parser.transferStructHash(t));
     }
 
     function getCustodyReleaseDigest(
@@ -1066,13 +959,25 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         return keccak256(abi.encodePacked(hashes));
     }
 
-    function _revertIfOutstandingCustody(address owner) internal view {
-        uint256[] storage vaultIds = vaultsWithOutstandingRelease[owner];
+    function _revertIfMakerOtokenHasOutstandingCustody(address maker, address otoken) internal view {
+        address vaultOwner = OtokenInterface(otoken).vaultOwner();
+        uint256[] storage vaultIds = vaultsWithOutstandingRelease[vaultOwner];
         uint256 len = vaultIds.length;
         for (uint256 i = 0; i < len; i++) {
-            if (vaultCustodyReleases[owner][vaultIds[i]].outstandingAmount != 0) {
+            uint256 vaultId = vaultIds[i];
+            if (vaultMakers[vaultOwner][vaultId] != maker) continue;
+            if (vaultCustodyReleases[vaultOwner][vaultId].outstandingAmount == 0) continue;
+
+            (MarginVault.Vault memory vault,,) = controller.getVaultWithDetails(vaultOwner, vaultId);
+            if (vault.shortOtokens.length != 0 && vault.shortOtokens[0] == otoken) {
                 revert OutstandingCustodyRelease();
             }
+        }
+    }
+
+    function _revertIfVaultHasOutstandingCustody(address owner, uint256 vaultId) internal view {
+        if (vaultCustodyReleases[owner][vaultId].outstandingAmount != 0) {
+            revert OutstandingCustodyRelease();
         }
     }
 
@@ -1103,13 +1008,21 @@ contract EnhancedOptions is EIP712Upgradeable, OwnableUpgradeable, ReentrancyGua
         require(sellerConfirmation.quantity <= mmQuote.quantity, QuantityExceedsQuote());
     }
 
+    function _requireMakerWhitelist(address maker) internal view returns (address receiver) {
+        receiver = makerWhitelist[maker];
+        if (receiver == ZERO_ADDRESS) revert IEnhancedOptions.MakerWhitelistRequired(maker);
+    }
+
     function _validateCustodyLimit(
+        address maker,
         address owner,
         uint256 vaultId,
         address asset,
         uint256 newOutstandingAmount,
         uint256 bps
     ) internal view {
+        if (vaultMakers[owner][vaultId] != maker) revert MakerNotVaultMaker();
+
         (MarginVault.Vault memory vault,,) = controller.getVaultWithDetails(owner, vaultId);
         if (vault.shortOtokens.length > 0) {
             require(

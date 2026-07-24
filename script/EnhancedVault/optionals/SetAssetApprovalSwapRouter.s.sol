@@ -6,20 +6,19 @@ import {EnhancedVault} from "src/periphery/vault/EnhancedVault.sol";
 import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 
 contract SetAssetApprovalRouter is BaseEnhancedVaultScript {
-    // Asset to approve/revoke for swapRouter spending.
-    address constant ASSET = 0x134b5f74d65a34eb6F9CdaD5eD664b45A167cC43;
     bool constant APPROVAL = true;
 
     function run() public {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        address asset = vm.envAddress("ASSET");
         (EnhancedVault vault, address vaultAddr) = _loadVault();
 
         console.log("EnhancedVault:", vaultAddr);
-        console.log("asset:", ASSET);
+        console.log("asset:", asset);
         console.log("approval:", APPROVAL);
 
         vm.startBroadcast(privateKey);
-        vault.setAssetApprovalSwapRouter(ASSET, APPROVAL);
+        vault.setAssetApprovalSwapRouter(asset, APPROVAL);
         vm.stopBroadcast();
     }
 }

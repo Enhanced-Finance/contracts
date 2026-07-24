@@ -21,16 +21,56 @@ contract DeployEnhancedOptionsProxy is Script {
         }
 
         string memory path = string.concat(deployDir, chainIdStr, ".json");
+        string memory configPath = string.concat(vm.projectRoot(), "/config/", chainIdStr, ".json");
         string memory json = vm.readFile(path);
+        string memory configJson = vm.readFile(configPath);
         address implementation = json.readAddress(".EnhancedOptions.implementationAddress");
         string memory verifyImplCmd = json.readString(".EnhancedOptions.verifyImplementationCommand");
 
         require(implementation != address(0), "Implementation address not found in deploy file");
 
+        address[] memory initialTrustedTakers;
+        if (vm.keyExists(configJson, ".EnhancedOptions.trustedTakers")) {
+            initialTrustedTakers = configJson.readAddressArray(".EnhancedOptions.trustedTakers");
+        } else if (vm.keyExists(configJson, ".EnhancedOptions.trustedOperators")) {
+            initialTrustedTakers = configJson.readAddressArray(".EnhancedOptions.trustedOperators");
+        } else {
+            initialTrustedTakers = new address[](0);
+        }
+
+        address[] memory initialTrustedMakers;
+        if (vm.keyExists(configJson, ".EnhancedOptions.trustedMakers")) {
+            initialTrustedMakers = configJson.readAddressArray(".EnhancedOptions.trustedMakers");
+        } else {
+            initialTrustedMakers = new address[](0);
+        }
+
+        address initialOperator;
+        if (vm.keyExists(configJson, ".EnhancedOptions.operator")) {
+            initialOperator = configJson.readAddress(".EnhancedOptions.operator");
+        }
+
+        address initialCustodyOperator;
+        if (vm.keyExists(configJson, ".EnhancedOptions.custodyOperator")) {
+            initialCustodyOperator = configJson.readAddress(".EnhancedOptions.custodyOperator");
+        } else if (vm.keyExists(configJson, ".EnhancedOptions.operator")) {
+            initialCustodyOperator = configJson.readAddress(".EnhancedOptions.operator");
+        }
+        require(initialOperator != address(0), "EnhancedOptions operator missing");
+        require(initialCustodyOperator != address(0), "EnhancedOptions custodyOperator missing");
+
         console.log("Deploying Proxy for Implementation at:", implementation);
+        console.log("Initial operator:", initialOperator);
+        console.log("Initial custody operator:", initialCustodyOperator);
 
         vm.startBroadcast(deployerPrivateKey);
-        ERC1967Proxy proxy = new ERC1967Proxy(implementation, abi.encodeCall(EnhancedOptions.initialize, ()));
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            implementation,
+            abi.encodeCall(
+                EnhancedOptions.initialize,
+                (initialTrustedTakers, initialTrustedMakers, initialOperator, initialCustodyOperator)
+            )
+        );
         vm.stopBroadcast();
 
         console.log("Proxy deployed at:", address(proxy));
@@ -51,7 +91,15 @@ contract DeployEnhancedOptionsProxy is Script {
             Strings.toHexString(address(proxy)),
             " lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol:ERC1967Proxy",
             " --constructor-args ",
-            Strings.toHexString(abi.encode(implementation, abi.encodeCall(EnhancedOptions.initialize, ())))
+            Strings.toHexString(
+                abi.encode(
+                    implementation,
+                    abi.encodeCall(
+                        EnhancedOptions.initialize,
+                        (initialTrustedTakers, initialTrustedMakers, initialOperator, initialCustodyOperator)
+                    )
+                )
+            )
         );
         string memory finalJson = vm.serializeString(jsonObj, "verifyProxyCommand", verifyProxyCmd);
 

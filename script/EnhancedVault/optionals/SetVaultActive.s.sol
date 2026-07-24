@@ -6,19 +6,19 @@ import {EnhancedVault} from "src/periphery/vault/EnhancedVault.sol";
 import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 
 contract SetVaultActive is BaseEnhancedVaultScript {
-    bytes32 constant VAULT_HASH = 0x62636cc6f993b3d3f0b9eedb473ce0bc98695e5bd02e667fa6b3552c5f5b7c29;
     bool constant IS_ACTIVE = true;
 
     function run() public {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        bytes32 vaultHash = vm.envBytes32("VAULT_HASH");
         (EnhancedVault vault, address vaultAddr) = _loadVault();
 
         console.log("EnhancedVault:", vaultAddr);
-        console.log("vaultHash:", vm.toString(VAULT_HASH));
+        console.log("vaultHash:", vm.toString(vaultHash));
         console.log("isActive:", IS_ACTIVE);
 
         vm.startBroadcast(privateKey);
-        vault.setVaultActive(VAULT_HASH, IS_ACTIVE);
+        vault.setVaultActive(vaultHash, IS_ACTIVE);
         vm.stopBroadcast();
     }
 }

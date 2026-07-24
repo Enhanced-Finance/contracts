@@ -7,9 +7,6 @@ import {Parser} from "src/core/libs/Parser.sol";
 import {BaseEnhancedVaultScript} from "./BaseEnhancedVaultScript.s.sol";
 
 contract CreateOrder is BaseEnhancedVaultScript {
-    bytes32 constant VAULT_HASH = 0x9832d172f61a4ac7cca7bad266a425d65bcb8fb83a3d195c378972572c5f2c3b;
-
-    // --- Quote/confirmation configuration (hard-coded) ---
     address ASSET_ADDRESS = vm.envAddress("UNDERLYING");
     bool constant IS_PUT = false;
     bool constant IS_PHYSICALLY_SETTLED = false;
@@ -24,7 +21,8 @@ contract CreateOrder is BaseEnhancedVaultScript {
     address USD = vm.envAddress("STRIKE");
     address COLLATERAL_ASSET = vm.envAddress("UNDERLYING");
     uint256 constant COLLATERAL_AMOUNT = 47000000000000000000000;
-    uint256 constant FEE = 0;
+    uint256 constant MAKER_FEE = 0;
+    uint256 constant TAKER_FEE = 0;
     // -----------------------------------------------------
 
     bytes32 constant QUOTE_TYPEHASH = keccak256(
@@ -36,14 +34,16 @@ contract CreateOrder is BaseEnhancedVaultScript {
     bytes32 constant ENHANCED_NAME_HASH = keccak256(bytes("enhanced"));
     bytes32 constant ENHANCED_VERSION_HASH = keccak256(bytes("0.0.0"));
     bytes32 constant VAULT_NAME_HASH = keccak256(bytes("Vault"));
-    bytes32 constant VAULT_VERSION_HASH = keccak256(bytes("2.0.0"));
+    bytes32 constant VAULT_VERSION_HASH = keccak256(bytes("0.0.0"));
 
     function run() public {
         // vaultSigner signature -> PRIVATE_KEY
         uint256 vaultSignerPrivateKey = vm.envUint("PRIVATE_KEY");
+        uint256 operatorPrivateKey = vm.envOr("OPERATOR_PRIVATE_KEY", vaultSignerPrivateKey);
+        bytes32 vaultHash = vm.envBytes32("VAULT_HASH");
         // maker quote signature -> MAKER_PRIVATE_KEY
         uint256 makerPrivateKey = vm.envUint("MAKER_PRIVATE_KEY");
-        bool useTrustedMaker = vm.envOr("USE_TRUSTED_MAKER", false);
+        bool useTrustedMaker = vm.envOr("USE_TRUSTED_MAKER", true);
         address maker = vm.addr(makerPrivateKey);
 
         (EnhancedVault vault, address vaultAddr) = _loadVault();
@@ -51,19 +51,19 @@ contract CreateOrder is BaseEnhancedVaultScript {
         require(enhancedOptionsAddr != address(0), "EnhancedOptions not set");
 
         bytes memory payload = _buildPayload(enhancedOptionsAddr, makerPrivateKey, maker, vaultAddr);
-        bytes memory vaultSig = _buildVaultSignature(vaultAddr, vaultSignerPrivateKey, payload);
+        bytes memory vaultSig = _buildVaultSignature(vaultAddr, vaultSignerPrivateKey, vaultHash, payload);
 
         console.log("EnhancedVault:", vaultAddr);
         console.log("EnhancedOptions:", enhancedOptionsAddr);
-        console.log("vaultHash:", vm.toString(VAULT_HASH));
+        console.log("vaultHash:", vm.toString(vaultHash));
         console.log("maker:", maker);
         console.log("useTrustedMaker:", useTrustedMaker);
         console.log("vaultSig:", vm.toString(vaultSig));
         console.log("payload:", vm.toString(payload));
         console.log("payloadLength:", payload.length);
 
-        vm.startBroadcast(vaultSignerPrivateKey);
-        vault.createOrder(VAULT_HASH, payload, vaultSig, useTrustedMaker);
+        vm.startBroadcast(operatorPrivateKey);
+        vault.createOrder(vaultHash, payload, vaultSig, useTrustedMaker);
         vm.stopBroadcast();
     }
 
@@ -161,19 +161,21 @@ contract CreateOrder is BaseEnhancedVaultScript {
             quote.usd,
             quote.collateralAsset,
             uint128(confirmation.collateralAmount),
-            uint128(FEE)
+            uint128(MAKER_FEE),
+            uint128(TAKER_FEE)
         );
     }
 
-    function _buildVaultSignature(address vaultAddr, uint256 vaultSignerPrivateKey, bytes memory payload)
-        internal
-        view
-        returns (bytes memory vaultSig)
-    {
+    function _buildVaultSignature(
+        address vaultAddr,
+        uint256 vaultSignerPrivateKey,
+        bytes32 vaultHash,
+        bytes memory payload
+    ) internal view returns (bytes memory vaultSig) {
         bytes32 vaultDomainSeparator = keccak256(
             abi.encode(EIP712_DOMAIN_TYPEHASH, VAULT_NAME_HASH, VAULT_VERSION_HASH, block.chainid, vaultAddr)
         );
-        bytes32 orderStructHash = keccak256(abi.encode(VAULT_ORDER_TYPEHASH, VAULT_HASH, keccak256(payload)));
+        bytes32 orderStructHash = keccak256(abi.encode(VAULT_ORDER_TYPEHASH, vaultHash, keccak256(payload)));
         bytes32 orderDigest = keccak256(abi.encodePacked("\x19\x01", vaultDomainSeparator, orderStructHash));
 
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(vaultSignerPrivateKey, orderDigest);

@@ -11,11 +11,13 @@ contract SetExpiryPriceInOracle is Script {
     // --- Configuration: Set these values before running ---
 
     // Price data to push
-    uint256 constant EXPIRY = 1777035948; // Expiry timestamp
+    uint256 constant EXPIRY = 1780996200; // Expiry timestamp
 
     // The symbol of the asset to set price for (must match config assets)
     string constant ASSET_SYMBOL = "PAXG";
-    uint256 constant PRICE = 468687500000; // Price in USD (8 decimals)
+    uint256 constant PRICE = 438687500000; // Price in USD (8 decimals)
+    // string constant ASSET_SYMBOL = "USDT";
+    // uint256 constant PRICE = 1e8; // Price in USD (8 decimals)
 
     // string constant ASSET_SYMBOL = "TWSEI";
     // uint256 constant PRICE = 6870000; // 6870000; // Price in USD (8 decimals)

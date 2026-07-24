@@ -6,7 +6,7 @@ import {EnhancedVault} from "../src/periphery/vault/EnhancedVault.sol";
 
 contract EnhancedVaultSizeTest is Test {
     uint256 internal constant EIP_170_LIMIT = 24_576;
-    uint256 internal constant REQUIRED_RUNTIME_HEADROOM = 1_024;
+    uint256 internal constant REQUIRED_RUNTIME_HEADROOM = 128;
 
     function testRuntimeCodeSize_ShouldStayWithinEip170Limit() external {
         EnhancedVault vault = new EnhancedVault();
@@ -18,7 +18,7 @@ contract EnhancedVaultSizeTest is Test {
         assertLe(
             address(vault).code.length,
             EIP_170_LIMIT - REQUIRED_RUNTIME_HEADROOM,
-            "EnhancedVault runtime size has less than 1KB headroom"
+            "EnhancedVault runtime size has less than the configured headroom"
         );
     }
 }

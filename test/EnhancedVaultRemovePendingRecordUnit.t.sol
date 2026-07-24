@@ -18,7 +18,8 @@ contract RemovePendingRecordHarness is EnhancedVault {
             user: address(0xBEEF),
             recordType: FundRecordType.DEPOSIT,
             amount: amount,
-            createdCycleId: 1
+            createdCycleId: 1,
+            isExitAll: false
         });
     }
 

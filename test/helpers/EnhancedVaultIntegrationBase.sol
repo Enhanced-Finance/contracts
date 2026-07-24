@@ -16,14 +16,16 @@ import {Controller} from "src/core/Controller.sol";
 import {MMarket} from "src/core/MMarket.sol";
 import {EnhancedOptions} from "src/core/EnhancedOptions.sol";
 import {ManualPricer} from "src/core/ManualPricer.sol";
+import {IEnhancedOptionsTimelock} from "src/core/interfaces/IEnhancedOptionsTimelock.sol";
 import {ISwapRouter} from "src/core/interfaces/ISwapRouter.sol";
 import {Parser} from "src/core/libs/Parser.sol";
 import {MarginVault} from "src/core/libs/MarginVault.sol";
+import {EnhancedOptionsTimelockLib} from "src/core/libs/EnhancedOptionsTimelockLib.sol";
 import {EnhancedVault} from "src/periphery/vault/EnhancedVault.sol";
 import {EnhancedVaultLinkedLibraries} from "./EnhancedVaultLinkedLibraries.sol";
 
 contract EnhancedVaultFixtureERC20 is ERC20 {
-    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_, 18) {}
+    constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_, decimals_) {}
 
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
@@ -78,8 +80,10 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
     uint256 internal constant INITIAL_USER_BALANCE = 1_000_000e18;
     uint256 internal constant INITIAL_MAKER_BALANCE = 1_000_000e18;
     uint256 internal constant SEEDED_UNDERLYING_PRICE = 2_000e8;
-    address internal constant PARSER_LIBRARY_PLACEHOLDER = 0x8192aefd9e6278c804596F92db4356510976e929;
-    address internal constant MARGIN_VAULT_LIBRARY_PLACEHOLDER = 0xDf209122ba34bC1eA43C25188CFB4A85dc7B1E68;
+    address internal constant PARSER_LIBRARY_PLACEHOLDER = 0x848368Aa602C0634900992CBB3fD7B1E040080c0;
+    address internal constant MARGIN_VAULT_LIBRARY_PLACEHOLDER = 0xB08C826f656D4BF7de6aB6Ad473ea0e0A7479c25;
+    address internal constant ENHANCED_OPTIONS_TIMELOCK_LIBRARY_PLACEHOLDER =
+        0xeF3cD61FDc9a41e32F6100FBef544bAB712dec9e;
 
     address internal owner;
     address internal operator;
@@ -115,7 +119,7 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
     bytes32 internal constant ENHANCED_NAME_HASH = keccak256(bytes("enhanced"));
     bytes32 internal constant ENHANCED_VERSION_HASH = keccak256(bytes("0.0.0"));
     bytes32 internal constant VAULT_NAME_HASH = keccak256(bytes("Vault"));
-    bytes32 internal constant VAULT_VERSION_HASH = keccak256(bytes("2.0.0"));
+    bytes32 internal constant VAULT_VERSION_HASH = keccak256(bytes("0.0.0"));
 
     bytes32 internal constant TRANSFER_TYPEHASH =
         keccak256("Transfer(address user,address asset,uint256 chainId,uint256 amount,bool isDeposit,uint64 nonce)");
@@ -138,7 +142,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         uint256 quoteQuantity;
         uint256 quantity;
         uint256 collateralAmount;
-        uint256 fee;
+        uint256 protocolFee;
+        uint256 makerFee;
         uint64 expiry;
         bool isPut;
         bool isPhysicallySettled;
@@ -159,7 +164,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         uint256 quoteQuantity;
         uint256 quantity;
         uint256 collateralAmount;
-        uint256 fee;
+        uint256 protocolFee;
+        uint256 makerFee;
         uint64 expiry;
         uint64 quoteNonce;
         uint64 confirmationNonce;
@@ -185,7 +191,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             uint256 currentCycleStart,
             uint256 totalDeposited,
             bool isPaused,
-            bool isEnd
+            bool isEnd,
+            uint256 protocolFeeRate
         ) = vault.vaults(targetVaultHash);
 
         st = EnhancedVault.VaultState({
@@ -195,12 +202,13 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             currentCycleStart: currentCycleStart,
             totalDeposited: totalDeposited,
             isPaused: isPaused,
-            isEnd: isEnd
+            isEnd: isEnd,
+            protocolFeeRate: protocolFeeRate
         });
     }
 
     function _currentCycleId(bytes32 targetVaultHash) internal view returns (uint256 currentCycleId) {
-        (,, currentCycleId,,,,) = vault.vaults(targetVaultHash);
+        (,, currentCycleId,,,,,) = vault.vaults(targetVaultHash);
     }
 
     function _userFund(bytes32 targetVaultHash, address targetUser)
@@ -220,6 +228,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             fund.initialAmountTotal,
             fund.nextRecordId,
             fund.buybackEnabled,
+            fund.exists,
+            fund.autoBuyEnabled
         ) = vault.userFunds(targetVaultHash, targetUser);
     }
 
@@ -275,11 +285,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         enhancedOptions.setMMarket(address(mmarket));
         enhancedOptions.setFactory(address(factory));
         enhancedOptions.setMarginPool(address(marginPool));
-        enhancedOptions.setTrustedTaker(address(vault), true);
-        enhancedOptions.setTrustedMaker(maker, true);
         enhancedOptions.setOperator(operator);
+        _setMakerWhitelistAsOwner(maker, maker);
 
-        vault.setMarginPool(address(marginPool));
         vault.setAssetApprovalMarginPool(address(underlying), true);
         vault.setSwapRouter(address(swapRouter));
         vault.setAssetApprovalSwapRouter(address(strike), true);
@@ -314,9 +322,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         bot = vm.addr(BOT_PK);
     }
 
-    function _deployTokens() internal {
-        underlying = new EnhancedVaultFixtureERC20("Fixture Underlying", "fUND");
-        strike = new EnhancedVaultFixtureERC20("Fixture Strike", "fUSD");
+    function _deployTokens() internal virtual {
+        underlying = new EnhancedVaultFixtureERC20("Fixture Underlying", "fUND", 18);
+        strike = new EnhancedVaultFixtureERC20("Fixture Strike", "fUSD", 18);
 
         underlying.mint(user, INITIAL_USER_BALANCE);
         underlying.mint(maker, INITIAL_MAKER_BALANCE);
@@ -328,6 +336,7 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         // materialize external library code at the compile-time placeholder addresses.
         vm.etch(PARSER_LIBRARY_PLACEHOLDER, type(Parser).runtimeCode);
         vm.etch(MARGIN_VAULT_LIBRARY_PLACEHOLDER, type(MarginVault).runtimeCode);
+        vm.etch(ENHANCED_OPTIONS_TIMELOCK_LIBRARY_PLACEHOLDER, type(EnhancedOptionsTimelockLib).runtimeCode);
         _etchEnhancedVaultLibraries();
 
         swapRouter = new EnhancedVaultBuybackOnlySwapRouterMock(address(strike), address(underlying));
@@ -373,13 +382,17 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         mmarket.initialize();
 
         _unlockInitializers(address(enhancedOptions));
-        enhancedOptions.initialize();
+        address[] memory initialTrustedTakers = new address[](1);
+        initialTrustedTakers[0] = address(vault);
+        address[] memory initialTrustedMakers = new address[](1);
+        initialTrustedMakers[0] = maker;
+        enhancedOptions.initialize(initialTrustedTakers, initialTrustedMakers, operator, operator);
 
         _unlockInitializers(address(manualPricer));
         manualPricer.initialize(bot, address(underlying), address(oracle), address(addressBook), owner);
 
         _unlockInitializers(address(vault));
-        vault.initialize(address(enhancedOptions), operator, vaultSigner);
+        vault.initialize(address(enhancedOptions), operator, vaultSigner, owner);
         vm.stopPrank();
     }
 
@@ -397,7 +410,7 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             minPrincipalRatio: 0,
             buybackPriceRatio: 0
         });
-        vaultHash = vault.createVault(defaultVaultParams);
+        vaultHash = vault.createVault(defaultVaultParams, 0);
     }
 
     function _approveUserDeposits() internal {
@@ -413,6 +426,9 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
     }
 
     function _seedUnderlyingSpotPrice() internal {
+        if (block.timestamp <= 1) {
+            vm.warp(2);
+        }
         vm.prank(bot);
         manualPricer.setExpiryPriceInOracle(block.timestamp - 1, SEEDED_UNDERLYING_PRICE);
     }
@@ -587,7 +603,7 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         params.minPrincipalRatio = minPrincipalRatio;
 
         vm.prank(owner);
-        vaultHash = vault.createVault(params);
+        vaultHash = vault.createVault(params, 0);
 
         defaultVaultParams = params;
     }
@@ -621,6 +637,17 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         _createOrderAsOperator(vaultHash, overrides);
     }
 
+    function _setMakerWhitelistAsOwner(address targetMaker, address receiver) internal {
+        bytes memory key = abi.encode(targetMaker);
+        enhancedOptions.scheduleConfigUpdate(
+            IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, abi.encode(targetMaker, receiver)
+        );
+        (, uint64 executeAfter) =
+            enhancedOptions.pendingConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+        vm.warp(executeAfter);
+        enhancedOptions.executeConfigUpdate(IEnhancedOptionsTimelock.TimelockConfigType.MakerWhitelist, key);
+    }
+
     function _unlockInitializers(address target) internal {
         // Direct-instance fixture tests intentionally bypass _disableInitializers().
         // This depends on current OZ Initializable storage layout and must be revisited if OZ internals change.
@@ -639,7 +666,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             quoteQuantity: 0,
             quantity: 0,
             collateralAmount: 0,
-            fee: 0,
+            protocolFee: 0,
+            makerFee: 0,
             expiry: 0,
             quoteNonce: 0,
             confirmationNonce: 0,
@@ -665,7 +693,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             quoteQuantity: 1e18,
             quantity: 1e18,
             collateralAmount: 1e18,
-            fee: 0,
+            protocolFee: 0,
+            makerFee: 0,
             expiry: uint64(defaultVaultParams.startTime + defaultVaultParams.cycleDuration),
             isPut: defaultVaultParams.isPut,
             isPhysicallySettled: false,
@@ -685,7 +714,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         if (overrides.quoteQuantity != 0) cfg.quoteQuantity = overrides.quoteQuantity;
         if (overrides.quantity != 0) cfg.quantity = overrides.quantity;
         if (overrides.collateralAmount != 0) cfg.collateralAmount = overrides.collateralAmount;
-        if (overrides.fee != 0) cfg.fee = overrides.fee;
+        if (overrides.protocolFee != 0) cfg.protocolFee = overrides.protocolFee;
+        if (overrides.makerFee != 0) cfg.makerFee = overrides.makerFee;
         if (overrides.expiry != 0) cfg.expiry = overrides.expiry;
         if (overrides.quoteNonce != 0) cfg.quoteNonce = overrides.quoteNonce;
         if (overrides.confirmationNonce != 0) cfg.confirmationNonce = overrides.confirmationNonce;
@@ -714,7 +744,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
         require(cfg.quantity <= type(uint128).max, "quantity overflow");
         require(cfg.strikePrice <= type(uint128).max, "strike overflow");
         require(cfg.collateralAmount <= type(uint128).max, "collateral overflow");
-        require(cfg.fee <= type(uint128).max, "fee overflow");
+        require(cfg.protocolFee <= type(uint128).max, "protocol fee overflow");
+        require(cfg.makerFee <= type(uint128).max, "maker fee overflow");
         bytes memory quoteSig = _signMakerQuote(cfg);
         bytes memory confSig = new bytes(65);
         return abi.encodePacked(
@@ -737,7 +768,8 @@ abstract contract EnhancedVaultIntegrationBase is EnhancedVaultLinkedLibraries {
             cfg.usd,
             cfg.collateralAsset,
             uint128(cfg.collateralAmount),
-            uint128(cfg.fee)
+            uint128(cfg.protocolFee),
+            uint128(cfg.makerFee)
         );
     }
 
