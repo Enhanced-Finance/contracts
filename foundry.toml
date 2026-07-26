@@ -16,13 +16,18 @@ fs_permissions = [
     { access = "read-write", path = "./.deploy" },
 ]
 libraries = [
-    "src/core/libs/Parser.sol:Parser:0xD46d7D1c10030Ef6063282374D31E78ab7112C71",
-    "src/core/libs/MarginVault.sol:MarginVault:0x48CCcDd73BD72b87eB0FEf42141f329E9512feeB",
+    "src/core/libs/Parser.sol:Parser:0x650acfF30eC34755264544Adf5bd07060dD52044",
+    "src/core/libs/MarginVault.sol:MarginVault:0x0cd0F9119B79aA043e5AD8bA019E58f29D7e3996",
+    "src/core/libs/EnhancedOptionsTimelockLib.sol:EnhancedOptionsTimelockLib:0xFDD162554285A7966E4A34c2a9E865ae31D68CfC",
+    # Local/test placeholders. For live deploys, run the library deploy scripts and replace these
+    # addresses; deployment and upgrade commands read linked libraries from foundry.toml.
+    "src/periphery/vault/libs/EnhancedVaultRecordsLib.sol:EnhancedVaultRecordsLib:0xcA38C86E3a261eA34AE48fDe8989b15C52862923",
+    "src/periphery/vault/libs/EnhancedVaultCycleLib.sol:EnhancedVaultCycleLib:0xa633DEb1d83241FAA700450Ef9249fc56A0ce685",
 ]
 
 [rpc_endpoints]
-sei_testnet = "${SEI_TESTNET_RPC}"
-sei_mainnet = "${SEI_MAINNET_RPC}"
+sepolia = "${TESTNET_RPC}"
+mainnet = "${PROD_RPC}"
 
 [lint]
 exclude_lints = [

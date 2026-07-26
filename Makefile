@@ -1,7 +1,8 @@
 -include .env
 
 .PHONY: deploy_enhanced_options_impl deploy_enhanced_options \
-		deploy_enhanced_vault_libs deploy_enhanced_vault_impl deploy_enhanced_vault_proxy \
+		deploy_enhanced_vault_libs deploy_enhanced_vault_records_lib deploy_enhanced_vault_cycle_lib \
+		deploy_enhanced_vault_impl deploy_enhanced_vault_proxy \
         deploy_address_book_impl deploy_address_book_proxy \
         deploy_controller_impl deploy_controller_proxy \
         deploy_controller_logic_impl deploy_controller_logic_proxy \
@@ -22,24 +23,25 @@
         build
 
 .PHONY: vault_set_active vault_set_operator vault_set_signer \
-		vault_set_swap_router \
+		vault_set_options vault_set_enhanced_options vault_set_swap_router \
 		vault_deposit vault_create_order vault_next_cycle \
 		vault_buyback vault_force_pause_funds vault_clear_force_exit vault_pause_fund \
 		vault_cancel_pause vault_withdraw vault_set_margin_pool vault_set_asset_approval_margin_pool \
-		vault_set_asset_approval_swap_router
+		vault_set_asset_approval_swap_router vault_set_protocol_fee_rate
 
-.PHONY: ingresso_new_user_position ingresso_transfer_asset ingresso_mmarket_deposit ingresso_otc_trade ingresso_redeem ingresso_settle ingresso_deposit_and_open ingresso_trusted_maker_deposit_and_open
+.PHONY: options_set_operator options_set_controller options_set_mmarket options_set_factory \
+		options_set_margin_pool options_set_fee_recipient options_set_trusted_taker \
+		options_set_trusted_maker options_set_maker_custody_limit_bps options_set_asset_approval \
+		options_set_custody_operator
 
-.PHONY: upgrade_enhanced_vault
-.NOTPARALLEL: deploy_libs deploy_all_impl deploy_all_proxy deploy_all_configure deploy_all deploy_enhanced_vault
+.PHONY: ingresso_new_user_position ingresso_transfer_asset ingresso_mmarket_deposit ingresso_redeem ingresso_settle ingresso_deposit_and_open ingresso_trusted_maker_deposit_and_open
+
+.PHONY: upgrade_enhanced_vault deploy_multicall3
+.NOTPARALLEL: deploy_libs deploy_enhanced_vault_libs deploy_all_impl deploy_all_proxy deploy_all_configure deploy_all deploy_enhanced_vault
 
 # Default RPC URL if not set in .env
 RPC_URL ?= https://evm-rpc-testnet.sei-apis.com
 CHAIN_ID ?= 1328
-
-define enhanced_vault_library_flags
-$$(node -e 'const fs = require("fs"); const chainId = "$(CHAIN_ID)"; const path = `./.deploy/$${chainId}.json`; if (!fs.existsSync(path)) { console.error(`Deploy file not found: $${path}. Run make deploy_enhanced_vault_libs first.`); process.exit(1); } const data = JSON.parse(fs.readFileSync(path, "utf8")); const vault = data.EnhancedVault || {}; const records = vault.recordsLibraryAddress; const cycle = vault.cycleLibraryAddress; if (!records || !cycle) { console.error(`EnhancedVault library addresses missing in $${path}. Run make deploy_enhanced_vault_libs first.`); process.exit(1); } process.stdout.write(`--libraries src/periphery/vault/libs/EnhancedVaultRecordsLib.sol:EnhancedVaultRecordsLib:$${records} --libraries src/periphery/vault/libs/EnhancedVaultCycleLib.sol:EnhancedVaultCycleLib:$${cycle}`);')
-endef
 
 # Helper function to update .env with implementation address
 # define update_env_impl
@@ -54,19 +56,29 @@ build:
 # ==========================================
 # 0. Deploy Libraries
 # ==========================================
-deploy_libs: deploy_parser deploy_margin_vault deploy_enhanced_vault_libs
+deploy_libs: deploy_parser deploy_margin_vault deploy_enhanced_options_timelock_lib deploy_enhanced_vault_libs
 
 deploy_parser:
 	@echo "Deploying Parser..."
-	forge create src/core/libs/Parser.sol:Parser --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast
+	forge script ./script/EnhancedOptions/DeployParserLib.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
 
 deploy_margin_vault:
 	@echo "Deploying MarginVault..."
-	forge create src/core/libs/MarginVault.sol:MarginVault --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast
+	forge script ./script/MarginCalculator/DeployMarginVaultLib.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
 
-deploy_enhanced_vault_libs:
-	@echo "Deploying EnhancedVault linked libraries..."
-	forge script ./script/EnhancedVault/DeployEnhancedVaultLibraries.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
+deploy_enhanced_options_timelock_lib:
+	@echo "Deploying EnhancedOptions timelock library..."
+	forge script ./script/EnhancedOptions/DeployEnhancedOptionsTimelockLib.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
+
+deploy_enhanced_vault_libs: deploy_enhanced_vault_records_lib deploy_enhanced_vault_cycle_lib
+
+deploy_enhanced_vault_records_lib:
+	@echo "Deploying EnhancedVaultRecordsLib..."
+	forge script ./script/EnhancedVault/DeployEnhancedVaultRecordsLib.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
+
+deploy_enhanced_vault_cycle_lib:
+	@echo "Deploying EnhancedVaultCycleLib..."
+	forge script ./script/EnhancedVault/DeployEnhancedVaultCycleLib.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
 
 # ==========================================
 # 1. Deploy All Implementations
@@ -83,7 +95,6 @@ deploy_all_impl: deploy_address_book_impl \
                  deploy_mmarket_impl \
                  deploy_enhanced_options_impl \
 				 deploy_manual_pricer_implementation \
-                 deploy_enhanced_vault_libs \
                  deploy_enhanced_vault_impl
 
 # ==========================================
@@ -106,9 +117,7 @@ deploy_all_proxy: deploy_enhanced_options \
 # ==========================================
 # 3. Configure All
 # ==========================================
-deploy_all_configure: configure_enhanced_options \
-                      configure_enhanced_options_trusted_roles \
-                      configure_enhanced_options_custody_limits \
+deploy_all_configure: configure_enhanced_options_trusted_roles \
                       configure_address_book \
                       configure_oracle \
                       configure_whitelist \
@@ -117,6 +126,7 @@ deploy_all_configure: configure_enhanced_options \
                       configure_controller_logic \
                       configure_controller \
                       configure_mmarket \
+					  configure_enhanced_options \
                       configure_enhanced_vault \
                       refresh_controller_config \
 					  whitelist_product \
@@ -136,7 +146,7 @@ deploy_oracle: deploy_oracle_impl deploy_oracle_proxy
 deploy_otoken: deploy_otoken_impl
 deploy_otoken_factory: deploy_otoken_factory_impl deploy_otoken_factory_proxy
 deploy_whitelist: deploy_whitelist_impl deploy_whitelist_proxy
-deploy_enhanced_vault: deploy_enhanced_vault_libs deploy_enhanced_vault_impl deploy_enhanced_vault_proxy
+deploy_enhanced_vault: deploy_enhanced_vault_impl deploy_enhanced_vault_proxy
 
 # ==========================================
 # 5. Deploy Everything
@@ -149,7 +159,7 @@ deploy_all: deploy_all_impl deploy_all_proxy deploy_all_configure
 
 deploy_enhanced_options_impl:
 	@echo "Deploying EnhancedOptions Implementation..."
-	forge script ./script/EnhancedOptions/DeployEnhancedOptions.s.sol --rpc-url $(RPC_URL) --broadcast
+	forge script ./script/EnhancedOptions/DeployEnhancedOptions.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
 	# $(call update_env_impl,EnhancedOptions)
 
 deploy_enhanced_options:
@@ -158,7 +168,7 @@ deploy_enhanced_options:
 
 deploy_enhanced_vault_impl:
 	@echo "Deploying EnhancedVault Implementation..."
-	forge script ./script/EnhancedVault/DeployEnhancedVault.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast $(call enhanced_vault_library_flags)
+	forge script ./script/EnhancedVault/DeployEnhancedVault.s.sol --rpc-url $(RPC_URL) --via-ir --broadcast
 
 deploy_enhanced_vault_proxy:
 	@echo "Deploying EnhancedVault Proxy..."
@@ -322,10 +332,6 @@ ingresso_mmarket_deposit:
 	@echo "Executing IngressoMMarketDeposit..."
 	forge script ./script/EnhancedOptions/Ingresso/IngressoMMarketDeposit.s.sol --rpc-url $(RPC_URL) --broadcast --via-ir --legacy
 
-ingresso_otc_trade:
-	@echo "Executing IngressoOTCTrade (enhancedSigner signature uses PRIVATE_KEY)..."
-	forge script ./script/EnhancedOptions/Ingresso/IngressoOTCTrade.s.sol --rpc-url $(RPC_URL) --broadcast
-
 ingresso_redeem:
 	@echo "Executing IngressoRedeem..."
 	forge script ./script/EnhancedOptions/Ingresso/IngressoRedeem.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
@@ -420,7 +426,7 @@ upgrade_enhanced_options:
 
 upgrade_enhanced_vault:
 	@echo "Upgrading EnhancedVault..."
-	forge script ./script/EnhancedVault/UpgradeEnhancedVault.s.sol --rpc-url $(RPC_URL) --broadcast --via-ir $(call enhanced_vault_library_flags)
+	forge script ./script/EnhancedVault/UpgradeEnhancedVault.s.sol --rpc-url $(RPC_URL) --broadcast --via-ir
 
 upgrade_manual_pricer:
 	@echo "Upgrading ManualPricer..."
@@ -446,6 +452,58 @@ query_address_book:
 	@echo "Querying AddressBook..."
 	forge script ./script/AddressBook/QueryAddressBook.s.sol --via-ir --rpc-url $(RPC_URL)
 
+# ==========================================
+# EnhancedOptions Optional Commands
+# ==========================================
+
+options_set_operator:
+	@echo "Setting EnhancedOptions Operator... env: NEW_OPERATOR"
+	forge script ./script/EnhancedOptions/optionals/SetOperator.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_custody_operator:
+	@echo "Setting EnhancedOptions CustodyOperator... requires NEW_CUSTODY_OPERATOR"
+	forge script ./script/EnhancedOptions/optionals/SetCustodyOperator.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_controller:
+	@echo "Setting EnhancedOptions Controller... env: NEW_CONTROLLER"
+	forge script ./script/EnhancedOptions/optionals/SetController.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_mmarket:
+	@echo "Setting EnhancedOptions MMarket... env: NEW_MMARKET"
+	forge script ./script/EnhancedOptions/optionals/SetMMarket.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_factory:
+	@echo "Setting EnhancedOptions Factory... env: NEW_FACTORY"
+	forge script ./script/EnhancedOptions/optionals/SetFactory.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_margin_pool:
+	@echo "Setting EnhancedOptions MarginPool... env: NEW_MARGIN_POOL"
+	forge script ./script/EnhancedOptions/optionals/SetMarginPool.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_fee_recipient:
+	@echo "Setting EnhancedOptions FeeRecipient... env: NEW_FEE_RECIPIENT"
+	forge script ./script/EnhancedOptions/optionals/SetFeeRecipient.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_trusted_taker:
+	@echo "Setting EnhancedOptions TrustedTaker... env: TAKER TRUSTED"
+	forge script ./script/EnhancedOptions/optionals/SetTrustedTaker.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_trusted_maker:
+	@echo "Setting EnhancedOptions TrustedMaker... env: MAKER TRUSTED"
+	forge script ./script/EnhancedOptions/optionals/SetTrustedMaker.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_maker_custody_limit_bps:
+	@echo "Setting EnhancedOptions MakerCustodyLimitBps... env: MAKER RECEIVER BPS"
+	forge script ./script/EnhancedOptions/optionals/SetMakerCustodyLimitBps.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+options_set_asset_approval:
+	@echo "Setting EnhancedOptions AssetApproval... env: ASSET APPROVAL"
+	forge script ./script/EnhancedOptions/optionals/SetAssetApproval.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+# ==========================================
+# EnhancedVault Optional Commands
+# ==========================================
+
 create_vault:
 	@echo "Creating Vault..."
 	forge script ./script/EnhancedVault/optionals/CreateVault.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
@@ -462,9 +520,15 @@ vault_set_signer:
 	@echo "Setting Vault Signer..."
 	forge script ./script/EnhancedVault/optionals/SetVaultSigner.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
 
-vault_set_margin_pool:
-	@echo "EnhancedVault MarginPool is read from EnhancedOptions..."
-	forge script ./script/EnhancedVault/optionals/SetMarginPool.s.sol --via-ir --rpc-url $(RPC_URL)
+vault_set_protocol_fee_rate:
+	@echo "Setting Vault protocol fee rate..."
+	forge script ./script/EnhancedVault/optionals/SetVaultProtocolFeeRate.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
+
+vault_set_options: vault_set_enhanced_options
+
+vault_set_enhanced_options:
+	@echo "Setting Vault EnhancedOptions... env fallback: VAULT_ENHANCED_OPTIONS"
+	forge script ./script/EnhancedVault/optionals/SetEnhancedOptions.s.sol --via-ir --rpc-url $(RPC_URL) --broadcast
 
 vault_set_asset_approval_margin_pool:
 	@echo "Setting Vault asset approval for MarginPool..."
@@ -521,3 +585,7 @@ vault_withdraw:
 deploy_mock_token:
 	@echo "Deploying Mock Token..."
 	forge script ./script/Mock/DeployMockERC20.s.sol --rpc-url $(RPC_URL) --broadcast
+
+deploy_multicall3:
+	@echo "Deploying Multicall3..."
+	forge script ./script/Multicall3/DeployMulticall3.s.sol --rpc-url $(RPC_URL) --broadcast
