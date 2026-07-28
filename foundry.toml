@@ -16,13 +16,13 @@ fs_permissions = [
     { access = "read-write", path = "./.deploy" },
 ]
 libraries = [
-    "src/core/libs/Parser.sol:Parser:0x650acfF30eC34755264544Adf5bd07060dD52044",
-    "src/core/libs/MarginVault.sol:MarginVault:0x0cd0F9119B79aA043e5AD8bA019E58f29D7e3996",
-    "src/core/libs/EnhancedOptionsTimelockLib.sol:EnhancedOptionsTimelockLib:0xFDD162554285A7966E4A34c2a9E865ae31D68CfC",
+    "src/core/libs/Parser.sol:Parser:0x2E7C2292a73cE5e7d4c57687231143283D14cD9F",
+    "src/core/libs/MarginVault.sol:MarginVault:0x6fc6e0E92707e36dC969797Bf524Bb4ECdd5a999",
+    "src/core/libs/EnhancedOptionsTimelockLib.sol:EnhancedOptionsTimelockLib:0x3D842D10aebAab97426313606Ae5D1c9bEee780a",
     # Local/test placeholders. For live deploys, run the library deploy scripts and replace these
     # addresses; deployment and upgrade commands read linked libraries from foundry.toml.
-    "src/periphery/vault/libs/EnhancedVaultRecordsLib.sol:EnhancedVaultRecordsLib:0xcA38C86E3a261eA34AE48fDe8989b15C52862923",
-    "src/periphery/vault/libs/EnhancedVaultCycleLib.sol:EnhancedVaultCycleLib:0xa633DEb1d83241FAA700450Ef9249fc56A0ce685",
+    "src/periphery/vault/libs/EnhancedVaultRecordsLib.sol:EnhancedVaultRecordsLib:0xac767Ca3E423ffC5Ae58865d6c1380340fDCA48D",
+    "src/periphery/vault/libs/EnhancedVaultCycleLib.sol:EnhancedVaultCycleLib:0xd6AbF4444089d5371416f1bDAF5176bc14EFb896",
 ]
 
 [rpc_endpoints]

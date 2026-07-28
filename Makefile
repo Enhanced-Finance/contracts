@@ -39,9 +39,6 @@
 .PHONY: upgrade_enhanced_vault deploy_multicall3
 .NOTPARALLEL: deploy_libs deploy_enhanced_vault_libs deploy_all_impl deploy_all_proxy deploy_all_configure deploy_all deploy_enhanced_vault
 
-# Default RPC URL if not set in .env
-RPC_URL ?= https://evm-rpc-testnet.sei-apis.com
-CHAIN_ID ?= 1328
 
 # Helper function to update .env with implementation address
 # define update_env_impl
