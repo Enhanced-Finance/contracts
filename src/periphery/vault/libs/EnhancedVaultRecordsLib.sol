@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {Math} from "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {EnhancedVault} from "../EnhancedVault.sol";
 
 library EnhancedVaultRecordsLib {
@@ -212,7 +213,7 @@ library EnhancedVaultRecordsLib {
                 if (i == len - 1) {
                     prorated = stopBudget - consumed;
                 } else {
-                    prorated = pendingWithdrawRequestRecords[records[i]].amount * stopBudget / totalRequested;
+                    prorated = Math.mulDiv(pendingWithdrawRequestRecords[records[i]].amount, stopBudget, totalRequested);
                 }
                 unchecked {
                     consumed += convertSingleWithdrawRequestRecord(
